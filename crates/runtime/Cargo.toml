@@ -1,0 +1,15 @@
+[package]
+name = "componentize-qjs-runtime"
+version = "0.1.0"
+edition = "2021"
+description = "QuickJS runtime for componentize-qjs"
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rquickjs = { version = "0.11", default-features = false, features = ["std", "bindgen"] }
+wit-bindgen = "0.41"
+wit-dylib-ffi = { git = "https://github.com/bytecodealliance/wasm-tools", default-features = false }
+heck = "0.5"

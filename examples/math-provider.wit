@@ -1,0 +1,10 @@
+package local:test;
+
+interface math {
+    add: func(a: s32, b: s32) -> s32;
+    multiply: func(a: s32, b: s32) -> s32;
+}
+
+world math-provider {
+    export math;
+}

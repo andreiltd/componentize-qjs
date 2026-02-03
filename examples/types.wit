@@ -1,0 +1,49 @@
+package test:types;
+
+world types {
+    // Numeric types
+    export add-u32: func(a: u32, b: u32) -> u32;
+    export add-s32: func(a: s32, b: s32) -> s32;
+    export add-f64: func(a: f64, b: f64) -> f64;
+    export negate: func(b: bool) -> bool;
+    export to-upper: func(c: char) -> char;
+    
+    // Record
+    record point {
+        x: f64,
+        y: f64,
+    }
+    export add-points: func(a: point, b: point) -> point;
+    
+    // List
+    export sum-list: func(nums: list<u32>) -> u32;
+    
+    // Option
+    export maybe-double: func(n: option<u32>) -> option<u32>;
+    
+    // Result
+    export safe-divide: func(a: u32, b: u32) -> result<u32, string>;
+    
+    // Enum
+    enum color {
+        red,
+        green,
+        blue,
+    }
+    export color-name: func(c: color) -> string;
+    
+    // Flags
+    flags permissions {
+        read,
+        write,
+        execute,
+    }
+    export check-read: func(p: permissions) -> bool;
+    
+    // Variant
+    variant shape {
+        circle(f64),
+        rectangle(point),
+    }
+    export shape-area: func(s: shape) -> f64;
+}

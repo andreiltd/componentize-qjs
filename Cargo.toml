@@ -1,0 +1,52 @@
+[workspace]
+members = ["crates/runtime"]
+resolver = "2"
+
+[package]
+name = "componentize-qjs"
+version = "0.1.0"
+edition = "2021"
+description = "Convert JavaScript to WebAssembly components using QuickJS"
+license = "Apache-2.0"
+
+[dependencies]
+anyhow = "1.0"
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", default-features = false, features = ["rt", "macros"] }
+wit-parser = "0.244"
+wit-component = { version = "0.244", features = ["dummy-module"] }
+wit-dylib = "0.244"
+wasi-preview1-component-adapter-provider = "41"
+wasmtime = { version = "43", features = ["component-model", "async"] }
+wasmtime-wasi = "43"
+wasmtime-wizer = { version = "43", features = ["component-model", "wasmtime"] }
+wac-graph = "0.9"
+indexmap = "2"
+
+[build-dependencies]
+anyhow = "1.0"
+flate2 = "1.1"
+glob = "0.3"
+tar = "0.4"
+ureq = "3"
+wasmparser = "0.244"
+wasm-encoder = "0.244"
+
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.1"
+tempfile = "3.13"
+
+# Profile for the wasm runtime (built via build.rs)
+[profile.release-wasm]
+inherits = "release"
+lto = true
+opt-level = "s"
+codegen-units = 1
+panic = "abort"
+
+[patch.crates-io]
+wasmtime = { git = "https://github.com/bytecodealliance/wasmtime", rev = "e69370509fc1094c3377fd0c2d3baf9a5c22f8bc" }
+wasmtime-wasi = { git = "https://github.com/bytecodealliance/wasmtime", rev = "e69370509fc1094c3377fd0c2d3baf9a5c22f8bc" }
+wasmtime-wizer = { git = "https://github.com/bytecodealliance/wasmtime", rev = "e69370509fc1094c3377fd0c2d3baf9a5c22f8bc" }
