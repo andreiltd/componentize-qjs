@@ -1,16 +1,22 @@
 //! QuickJS runtime implementing the wit-dylib-ffi Interpreter trait.
 #![allow(unsafe_code)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
+#![no_std]
+
+extern crate alloc;
+
+use core::cell::{Cell, OnceCell};
+use core::sync::atomic::{AtomicBool, Ordering};
+
+use hashbrown::HashMap;
+
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 use heck::{ToLowerCamelCase, ToUpperCamelCase};
 use rquickjs::{function::Rest, Context, Persistent, Runtime, Value};
-use std::alloc::Layout;
-use std::boxed::Box;
-use std::cell::{Cell, OnceCell};
-use std::collections::HashMap;
-use std::string::String;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::vec::Vec;
 use wit_dylib_ffi::{
     Call, Enum, ExportFunction, Flags, Future, ImportFunction, Interpreter, List, Record, Resource,
     Stream, Tuple, Variant, Wit, WitOption, WitResult,
@@ -35,11 +41,10 @@ unsafe extern "C" {
     fn reset_adapter_state();
 }
 
-#[link(wasm_import_module = "env")]
 unsafe extern "C" {
-    #[link_name = "__wasilibc_reset_preopens"]
-    fn wasilibc_reset_preopens();
+    fn __wasilibc_reset_preopens();
 }
+
 /// Global JS state (Runtime + Context).
 static JS_STATE: WasmSingleThreaded<OnceCell<JsState>> = WasmSingleThreaded(OnceCell::new());
 
@@ -75,7 +80,7 @@ fn init_js(js_source: &str) -> Result<(), String> {
 
     unsafe {
         reset_adapter_state();
-        wasilibc_reset_preopens();
+        __wasilibc_reset_preopens();
     }
 
     Ok(())
@@ -116,7 +121,7 @@ where
         f(ctx)
     } else {
         js_context().with(|ctx| {
-            CACHED_CTX.0.set(Some(std::ptr::addr_of!(ctx) as *const ()));
+            CACHED_CTX.0.set(Some(core::ptr::addr_of!(ctx) as *const ()));
             let result = f(&ctx);
             CACHED_CTX.0.set(None);
             result
@@ -131,6 +136,8 @@ fn wit() -> Wit {
     *WIT.0.get().expect("WIT not initialized")
 }
 
+use core::alloc::Layout;
+
 /// Call context for export/import invocations.
 #[derive(Default)]
 pub struct QjsCallContext {
@@ -143,7 +150,7 @@ impl Drop for QjsCallContext {
     fn drop(&mut self) {
         for (ptr, layout) in self.deferred_deallocs.drain(..) {
             unsafe {
-                std::alloc::dealloc(ptr, layout);
+                alloc::alloc::dealloc(ptr, layout);
             }
         }
     }

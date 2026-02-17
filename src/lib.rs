@@ -65,8 +65,6 @@ pub async fn componentize(opts: &ComponentizeOpts<'_>) -> Result<Vec<u8>> {
 
     let pre_wizer_component = wit_component::Linker::default()
         .validate(true)
-        .use_built_in_libdl(true)
-        .library("libc.so", LIBC_SO, false)?
         .library("componentize_qjs_runtime.wasm", RUNTIME_WASM, false)?
         .library("wit-dylib.wasm", &wit_dylib, false)?
         .adapter(

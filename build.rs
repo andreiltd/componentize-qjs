@@ -26,13 +26,23 @@ fn main() -> Result<()> {
     let wasi_sdk = get_wasi_sdk(&out_dir)?;
     eprintln!("Using wasi-sdk at: {}", wasi_sdk.display());
 
-    let rustflags = "-Clink-arg=-shared -Clink-self-contained=n";
+    // Link libc statically into the shared wasm module
+    let optimize_size = env::var("CARGO_FEATURE_OPTIMIZE_SIZE").is_ok();
+    let rustflags = if optimize_size {
+        "-Clink-arg=-shared -Clink-arg=-Wl,--no-entry -Copt-level=z"
+    } else {
+        "-Clink-arg=-shared -Clink-arg=-Wl,--no-entry"
+    };
+
+    let cflags = if optimize_size { "-fPIC -Oz" } else { "-fPIC" };
+
     let mut cargo = Command::new("cargo");
     cargo
         .arg("build")
         .arg("--target")
         .arg(target)
         .arg("--package=componentize-qjs-runtime")
+        .arg("--no-default-features")
         .env("CARGO_TARGET_DIR", &out_dir)
         .env(format!("CARGO_TARGET_{upcase}_RUSTFLAGS"), rustflags)
         .env(
@@ -43,7 +53,7 @@ fn main() -> Result<()> {
             format!("CC_{}", target.replace('-', "_")),
             wasi_sdk.join("bin/clang"),
         )
-        .env(format!("CFLAGS_{}", target.replace('-', "_")), "-fPIC")
+        .env(format!("CFLAGS_{}", target.replace('-', "_")), cflags)
         .env("WASI_SDK_PATH", &wasi_sdk)
         .env("WASI_SDK", &wasi_sdk)
         .env_remove("CARGO_ENCODED_RUSTFLAGS");
@@ -76,30 +86,12 @@ fn main() -> Result<()> {
         runtime_dst.display()
     );
 
-    // Copy and strip wasi-sdk shared libraries
-    let sysroot_lib = wasi_sdk.join("share/wasi-sysroot/lib").join(target);
-    let libs = ["libc.so"];
-
-    for lib in libs {
-        let src = sysroot_lib.join(lib);
-        if !src.exists() {
-            bail!("{lib} not found at: {}", src.display());
-        }
-
-        let bytes = fs::read(&src).with_context(|| format!("Failed to read {lib}"))?;
-        let stripped = strip_wasm(&bytes);
-        fs::write(out_dir.join(lib), stripped).with_context(|| format!("Failed to write {lib}"))?;
-    }
-
     let output = format!(
-        r#"const RUNTIME_WASM: &[u8] = include_bytes!({:?});
-           const LIBC_SO: &[u8] = include_bytes!({:?});
-        "#,
+        r#"const RUNTIME_WASM: &[u8] = include_bytes!({:?});"#,
         runtime_dst,
-        out_dir.join("libc.so"),
     );
-
     fs::write(out_dir.join("output.rs"), output).context("Failed to write output.rs")?;
+
     Ok(())
 }
 
