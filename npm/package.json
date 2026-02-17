@@ -1,0 +1,44 @@
+{
+  "name": "componentize-qjs",
+  "version": "0.1.0",
+  "description": "Convert JavaScript to WebAssembly components using QuickJS",
+  "license": "Apache-2.0",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "bin": {
+    "componentize-qjs": "bin/componentize-qjs"
+  },
+  "files": [
+    "bin",
+    "cli.mjs",
+    "index.js",
+    "index.d.ts"
+  ],
+  "scripts": {
+    "build:debug": "napi build --manifest-path ../napi/Cargo.toml --platform --js index.js --dts index.d.ts -o .",
+    "build:release": "napi build --manifest-path ../napi/Cargo.toml --platform --js index.js --dts index.d.ts -o . --release",
+    "build": "npm run build:release",
+    "test": "vitest run --dir ./test"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^3",
+    "vitest": "^3.2.4"
+  },
+  "napi": {
+    "binaryName": "componentize-qjs",
+    "packageName": "@aspect-build/componentize-qjs-binding",
+    "targets": [
+      "x86_64-apple-darwin",
+      "aarch64-apple-darwin",
+      "x86_64-unknown-linux-gnu",
+      "aarch64-unknown-linux-gnu",
+      "x86_64-unknown-linux-musl",
+      "aarch64-unknown-linux-musl",
+      "x86_64-pc-windows-msvc",
+      "aarch64-pc-windows-msvc"
+    ]
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

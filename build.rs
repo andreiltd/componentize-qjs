@@ -20,7 +20,8 @@ fn main() -> Result<()> {
     let target = "wasm32-wasip2";
     let upcase = target.to_uppercase().replace('-', "_");
 
-    let runtime_release = true;
+    let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
+
     // Get wasi-sdk - from env, cached, or download
     let wasi_sdk = get_wasi_sdk(&out_dir)?;
     eprintln!("Using wasi-sdk at: {}", wasi_sdk.display());
@@ -47,8 +48,8 @@ fn main() -> Result<()> {
         .env("WASI_SDK", &wasi_sdk)
         .env_remove("CARGO_ENCODED_RUSTFLAGS");
 
-    if runtime_release {
-        cargo.args(["--profile", "release-wasm"]);
+    if profile == "release" {
+        cargo.arg("--release");
     }
 
     eprintln!("Building runtime: {cargo:?}");
@@ -57,24 +58,17 @@ fn main() -> Result<()> {
         bail!("Failed to build runtime");
     }
 
-    // Copy to known location
-    let profile_dir = if runtime_release {
-        "release-wasm"
-    } else {
-        "debug"
-    };
     let runtime_src = out_dir
         .join(target)
-        .join(profile_dir)
+        .join(&profile)
         .join("componentize_qjs_runtime.wasm");
 
     let runtime_dst = out_dir.join("runtime.wasm");
 
-    // Strip runtime
     let bytes = fs::read(&runtime_src)
         .with_context(|| format!("Failed to read {}", runtime_src.display()))?;
-    let stripped_runtime = strip_wasm(&bytes);
 
+    let stripped_runtime = strip_wasm(&bytes);
     fs::write(&runtime_dst, stripped_runtime).context("Failed to write runtime.wasm")?;
 
     println!(
@@ -84,7 +78,7 @@ fn main() -> Result<()> {
 
     // Copy and strip wasi-sdk shared libraries
     let sysroot_lib = wasi_sdk.join("share/wasi-sysroot/lib").join(target);
-    let libs = ["libc.so", "libsetjmp.so", "libwasi-emulated-signal.so"];
+    let libs = ["libc.so"];
 
     for lib in libs {
         let src = sysroot_lib.join(lib);
@@ -100,13 +94,9 @@ fn main() -> Result<()> {
     let output = format!(
         r#"const RUNTIME_WASM: &[u8] = include_bytes!({:?});
            const LIBC_SO: &[u8] = include_bytes!({:?});
-           const LIBSETJMP_SO: &[u8] = include_bytes!({:?});
-           const LIBWASI_EMULATED_SIGNAL_SO: &[u8] = include_bytes!({:?});
         "#,
         runtime_dst,
         out_dir.join("libc.so"),
-        out_dir.join("libsetjmp.so"),
-        out_dir.join("libwasi-emulated-signal.so"),
     );
 
     fs::write(out_dir.join("output.rs"), output).context("Failed to write output.rs")?;

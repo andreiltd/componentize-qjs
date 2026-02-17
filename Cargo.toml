@@ -1,5 +1,6 @@
 [workspace]
-members = ["crates/runtime"]
+members = ["crates/runtime", "napi"]
+default-members = [".", "napi"]
 resolver = "2"
 
 [package]
@@ -8,6 +9,14 @@ version = "0.1.0"
 edition = "2021"
 description = "Convert JavaScript to WebAssembly components using QuickJS"
 license = "Apache-2.0"
+
+[lib]
+name = "componentize_qjs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "componentize-qjs"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0"
@@ -38,13 +47,8 @@ assert_cmd = "2.0"
 predicates = "3.1"
 tempfile = "3.13"
 
-# Profile for the wasm runtime (built via build.rs)
-[profile.release-wasm]
-inherits = "release"
+[profile.release]
 lto = true
-opt-level = "s"
-codegen-units = 1
-panic = "abort"
 
 [patch.crates-io]
 wasmtime = { git = "https://github.com/bytecodealliance/wasmtime", rev = "e69370509fc1094c3377fd0c2d3baf9a5c22f8bc" }

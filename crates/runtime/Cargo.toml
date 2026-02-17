@@ -9,7 +9,7 @@ license = "Apache-2.0"
 crate-type = ["cdylib"]
 
 [dependencies]
-rquickjs = { version = "0.11", default-features = false, features = ["std", "bindgen"] }
+rquickjs = { version = "0.11", default-features = false, features = ["std", "bindgen", "disable-assertions"] }
 wit-bindgen = "0.41"
 wit-dylib-ffi = { git = "https://github.com/bytecodealliance/wasm-tools", default-features = false }
 heck = "0.5"
