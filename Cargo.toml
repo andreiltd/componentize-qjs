@@ -7,6 +7,7 @@ resolver = "2"
 name = "componentize-qjs"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.93"
 description = "Convert JavaScript to WebAssembly components using QuickJS"
 license = "Apache-2.0"
 
