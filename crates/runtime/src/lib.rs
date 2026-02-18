@@ -121,7 +121,9 @@ where
         f(ctx)
     } else {
         js_context().with(|ctx| {
-            CACHED_CTX.0.set(Some(core::ptr::addr_of!(ctx) as *const ()));
+            CACHED_CTX
+                .0
+                .set(Some(core::ptr::addr_of!(ctx) as *const ()));
             let result = f(&ctx);
             CACHED_CTX.0.set(None);
             result

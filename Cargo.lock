@@ -418,8 +418,6 @@ dependencies = [
  "ureq",
  "wac-graph",
  "wasi-preview1-component-adapter-provider",
- "wasm-encoder 0.244.0",
- "wasmparser 0.244.0",
  "wasmtime",
  "wasmtime-wasi",
  "wasmtime-wizer",
