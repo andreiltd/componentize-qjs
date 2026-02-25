@@ -27,9 +27,9 @@ wit-parser = "0.244"
 wit-component = { version = "0.244", features = ["dummy-module"] }
 wit-dylib = "0.244"
 wasi-preview1-component-adapter-provider = "41"
-wasmtime = { version = "43", features = ["component-model", "async"] }
-wasmtime-wasi = "43"
-wasmtime-wizer = { version = "43", features = ["component-model", "wasmtime"] }
+wasmtime = { version = "42", features = ["component-model", "async"] }
+wasmtime-wasi = "42"
+wasmtime-wizer = { version = "42", features = ["component-model", "wasmtime"] }
 wac-graph = "0.9"
 indexmap = "2"
 
@@ -51,8 +51,3 @@ optimize-size = []
 
 [profile.release]
 lto = true
-
-[patch.crates-io]
-wasmtime = { git = "https://github.com/bytecodealliance/wasmtime", rev = "e69370509fc1094c3377fd0c2d3baf9a5c22f8bc" }
-wasmtime-wasi = { git = "https://github.com/bytecodealliance/wasmtime", rev = "e69370509fc1094c3377fd0c2d3baf9a5c22f8bc" }
-wasmtime-wizer = { git = "https://github.com/bytecodealliance/wasmtime", rev = "e69370509fc1094c3377fd0c2d3baf9a5c22f8bc" }
