@@ -1,0 +1,21 @@
+package test:wasi;
+
+world wasi-random {
+    import wasi:random/random@0.2.6;
+
+    export get-random-u64: func() -> u64;
+    export get-random-bytes: func(len: u32) -> list<u8>;
+}
+
+world wasi-clocks {
+    import wasi:clocks/monotonic-clock@0.2.6;
+
+    export get-time-ns: func() -> u64;
+    export elapsed-ns: func() -> u64;
+}
+
+world wasi-environment {
+    import wasi:cli/environment@0.2.6;
+
+    export get-env-vars: func() -> list<tuple<string, string>>;
+}

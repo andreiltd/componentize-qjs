@@ -1,5 +1,6 @@
 //! Integration tests for componentize-qjs
 use std::fs;
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use predicates::prelude::*;
@@ -42,8 +43,11 @@ struct Expectation {
 /// Builder for constructing and running component tests.
 struct TestCase {
     wit: Option<String>,
+    wit_dir: Option<PathBuf>,
+    world_name: Option<String>,
     script: Option<String>,
     stub_wasi: bool,
+    env_vars: Vec<(String, String)>,
     expectations: Vec<Expectation>,
 }
 
@@ -51,14 +55,30 @@ impl TestCase {
     fn new() -> Self {
         Self {
             wit: None,
+            wit_dir: None,
+            world_name: None,
             script: None,
             stub_wasi: false,
+            env_vars: Vec::new(),
             expectations: Vec::new(),
         }
     }
 
+    /// Set inline WIT source (written to a temp file).
     fn wit(mut self, wit: &str) -> Self {
         self.wit = Some(wit.to_string());
+        self
+    }
+
+    /// Set path to a WIT directory (with deps/).
+    fn wit_dir(mut self, path: impl Into<PathBuf>) -> Self {
+        self.wit_dir = Some(path.into());
+        self
+    }
+
+    /// Select a specific world from the WIT package.
+    fn world(mut self, name: &str) -> Self {
+        self.world_name = Some(name.to_string());
         self
     }
 
@@ -69,6 +89,12 @@ impl TestCase {
 
     fn stub_wasi(mut self) -> Self {
         self.stub_wasi = true;
+        self
+    }
+
+    /// Add an environment variable visible to the WASI context.
+    fn env(mut self, key: &str, value: &str) -> Self {
+        self.env_vars.push((key.to_string(), value.to_string()));
         self
     }
 
@@ -85,21 +111,19 @@ impl TestCase {
     /// Build the component and return a live instance ready for calls.
     fn build(self) -> anyhow::Result<ComponentInstance> {
         let dir = TempDir::new()?;
-        let wit_path = dir.path().join("test.wit");
-        fs::write(
-            &wit_path,
-            self.wit
-                .as_deref()
-                .expect("wit() must be called before build()"),
-        )?;
+
+        let wit_path = if let Some(ref wit_dir) = self.wit_dir {
+            wit_dir.clone()
+        } else {
+            let p = dir.path().join("test.wit");
+            fs::write(&p, self.wit.as_deref().unwrap())?;
+            p
+        };
 
         let opts = ComponentizeOpts {
             wit_path: &wit_path,
-            js_source: self
-                .script
-                .as_deref()
-                .expect("script() must be called before build()"),
-            world_name: None,
+            js_source: self.script.as_deref().unwrap(),
+            world_name: self.world_name.as_deref(),
             stub_wasi: self.stub_wasi,
         };
 
@@ -112,7 +136,14 @@ impl TestCase {
         let engine = engine();
         let component = Component::new(engine, &wasm)?;
 
-        let wasi = WasiCtxBuilder::new().build();
+        let mut wasi_builder = WasiCtxBuilder::new();
+        if !self.env_vars.is_empty() {
+            wasi_builder.inherit_env();
+            for (k, v) in &self.env_vars {
+                wasi_builder.env(k, v);
+            }
+        }
+        let wasi = wasi_builder.build();
         let table = ResourceTable::new();
         let mut store = Store::new(engine, WasiCtxState { wasi, table });
 
@@ -973,5 +1004,116 @@ fn test_repeated_calls() {
 
     for _ in 0..5 {
         assert_eq!(inst.call1("hello", &[]), Val::String("hello".into()));
+    }
+}
+
+fn wasi_wit_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wit")
+}
+
+#[test]
+fn test_wasi_random() {
+    let mut inst = TestCase::new()
+        .wit_dir(wasi_wit_dir())
+        .world("wasi-random")
+        .script(
+            r#"
+            const random = globalThis["wasi:random/random@0.2.6"];
+            function getRandomU64() { return random.getRandomU64(); }
+            function getRandomBytes(len) { return random.getRandomBytes(len); }
+        "#,
+        )
+        .build()
+        .expect("should build wasi-random component");
+
+    let val = inst.call1("get-random-u64", &[]);
+    assert!(matches!(val, Val::U64(_)), "Expected u64, got: {:?}", val);
+
+    let val2 = inst.call1("get-random-u64", &[]);
+    assert_ne!(val, val2, "Two random u64 calls returned the same value");
+
+    let bytes = inst.call1("get-random-bytes", &[Val::U32(16)]);
+    match &bytes {
+        Val::List(items) => assert_eq!(items.len(), 16, "Expected 16 random bytes"),
+        other => panic!("Expected list, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_wasi_clocks() {
+    let mut inst = TestCase::new()
+        .wit_dir(wasi_wit_dir())
+        .world("wasi-clocks")
+        .script(
+            r#"
+            const clock = globalThis["wasi:clocks/monotonic-clock@0.2.6"];
+            function getTimeNs() { return clock.now(); }
+            function elapsedNs() {
+                const start = clock.now();
+                // Do some trivial work to burn a tiny bit of time
+                let x = 0;
+                for (let i = 0; i < 1000; i++) { x += i; }
+                return clock.now() - start;
+            }
+        "#,
+        )
+        .build()
+        .expect("should build wasi-clocks component");
+
+    // Monotonic clock should return a positive timestamp
+    let time = inst.call1("get-time-ns", &[]);
+    match time {
+        Val::U64(ns) => assert!(ns > 0, "Monotonic clock returned 0"),
+        other => panic!("Expected u64, got: {:?}", other),
+    }
+
+    // Second call should be >= first
+    let time2 = inst.call1("get-time-ns", &[]);
+    match (&time, &time2) {
+        (Val::U64(t1), Val::U64(t2)) => assert!(t2 >= t1, "Clock went backwards: {} -> {}", t1, t2),
+        _ => unreachable!(),
+    }
+
+    // Elapsed should return a u64
+    let elapsed = inst.call1("elapsed-ns", &[]);
+    assert!(
+        matches!(elapsed, Val::U64(_)),
+        "Expected u64, got: {:?}",
+        elapsed
+    );
+}
+
+#[test]
+fn test_wasi_environment() {
+    let mut inst = TestCase::new()
+        .wit_dir(wasi_wit_dir())
+        .world("wasi-environment")
+        .env("TEST_KEY", "test_value")
+        .script(
+            r#"
+            const env = globalThis["wasi:cli/environment@0.2.6"];
+            function getEnvVars() { return env.getEnvironment(); }
+        "#,
+        )
+        .build()
+        .expect("should build wasi-environment component");
+
+    let vars = inst.call1("get-env-vars", &[]);
+    match &vars {
+        Val::List(items) => {
+            let found = items.iter().any(|item| {
+                matches!(item, Val::Tuple(fields) if
+                    fields.len() == 2
+                    && fields[0] == Val::String("TEST_KEY".into())
+                    && fields[1] == Val::String("test_value".into())
+                )
+            });
+            assert!(
+                found,
+                "TEST_KEY=test_value not found in env vars: {:?}",
+                items
+            );
+        }
+        other => panic!("Expected list, got: {:?}", other),
     }
 }
