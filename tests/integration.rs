@@ -1,4 +1,6 @@
 //! Integration tests for componentize-qjs
+use std::fs;
+use std::sync::OnceLock;
 
 use predicates::prelude::*;
 use tempfile::TempDir;
