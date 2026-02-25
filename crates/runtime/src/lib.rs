@@ -51,8 +51,8 @@ static JS_STATE: WasmSingleThreaded<OnceCell<JsState>> = WasmSingleThreaded(Once
 /// Track whether JS has been evaluated
 static JS_EVALUATED: AtomicBool = AtomicBool::new(false);
 
-/// Cached context pointer for nested access.
-static CACHED_CTX: WasmSingleThreaded<Cell<Option<*const ()>>> =
+/// Cached pointer to the currently active `rquickjs::Ctx` for re-entrant calls.
+static ACTIVE_CTX_PTR: WasmSingleThreaded<Cell<Option<*const ()>>> =
     WasmSingleThreaded(Cell::new(None));
 
 struct JsState {
@@ -65,6 +65,25 @@ struct WasmSingleThreaded<T>(T);
 
 // SAFETY: WASM execution is single-threaded (for now).
 unsafe impl<T> Sync for WasmSingleThreaded<T> {}
+
+/// Restores the previously cached context pointer when leaving a `with_ctx` frame.
+struct CachedCtxGuard {
+    previous: Option<*const ()>,
+}
+
+impl CachedCtxGuard {
+    fn install(ptr: *const ()) -> Self {
+        Self {
+            previous: ACTIVE_CTX_PTR.0.replace(Some(ptr)),
+        }
+    }
+}
+
+impl Drop for CachedCtxGuard {
+    fn drop(&mut self) {
+        ACTIVE_CTX_PTR.0.set(self.previous);
+    }
+}
 
 /// Initialize the QuickJS runtime with JavaScript source code.
 /// This is called by Wizer during pre-initialization.
@@ -111,24 +130,23 @@ fn js_context() -> &'static Context {
 }
 
 /// Re-uses the active context if already inside `Context::with()` to avoid deadlock.
+///
+/// This is needed for re-entrant flows such as export -> host import callback -> JS conversions.
 fn with_ctx<F, R>(f: F) -> R
 where
     F: FnOnce(&rquickjs::Ctx<'_>) -> R,
     R: 'static,
 {
-    if let Some(ptr) = CACHED_CTX.0.get() {
+    if let Some(ptr) = ACTIVE_CTX_PTR.0.get() {
+        // SAFETY: `ACTIVE_CTX_PTR` is only set while a `Context::with()` frame is active.
         let ctx = unsafe { &*(ptr as *const rquickjs::Ctx<'_>) };
-        f(ctx)
-    } else {
-        js_context().with(|ctx| {
-            CACHED_CTX
-                .0
-                .set(Some(core::ptr::addr_of!(ctx) as *const ()));
-            let result = f(&ctx);
-            CACHED_CTX.0.set(None);
-            result
-        })
+        return f(ctx);
     }
+
+    js_context().with(|ctx| {
+        let _guard = CachedCtxGuard::install(core::ptr::from_ref(&ctx).cast::<()>());
+        f(&ctx)
+    })
 }
 
 // Global import lookups.
@@ -813,3 +831,25 @@ impl Call for QjsCallContext {
 
 // Export FFI symbols
 wit_dylib_ffi::export!(QjsInterpreter);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cached_ctx_guard_restores_previous_pointer() {
+        let previous = 1u8;
+        let current = 2u8;
+        let previous_ptr = core::ptr::from_ref(&previous).cast::<()>();
+        let current_ptr = core::ptr::from_ref(&current).cast::<()>();
+
+        ACTIVE_CTX_PTR.0.set(Some(previous_ptr));
+        {
+            let _guard = CachedCtxGuard::install(current_ptr);
+            assert_eq!(ACTIVE_CTX_PTR.0.get(), Some(current_ptr));
+        }
+        assert_eq!(ACTIVE_CTX_PTR.0.get(), Some(previous_ptr));
+
+        ACTIVE_CTX_PTR.0.set(None);
+    }
+}
