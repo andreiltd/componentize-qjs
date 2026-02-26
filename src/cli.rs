@@ -2,6 +2,14 @@ use crate::{componentize, ComponentizeOpts};
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use oxc_allocator::Allocator;
+use oxc_codegen::Codegen;
+use oxc_minifier::{
+    CompressOptions, CompressOptionsKeepNames, CompressOptionsUnused, MangleOptions, Minifier,
+    MinifierOptions,
+};
+use oxc_parser::Parser as OxcParser;
+use oxc_span::SourceType;
 
 use std::fs;
 
@@ -28,6 +36,10 @@ pub struct CliArgs {
     /// Stub all WASI imports with traps
     #[arg(long)]
     pub stub_wasi: bool,
+
+    /// Minify the JS source via oxc before componentizing
+    #[arg(short = 'm', long)]
+    pub minify: bool,
 }
 
 /// Run the componentize-qjs CLI with the given arguments.
@@ -44,6 +56,32 @@ pub async fn run(args: Vec<String>) -> Result<()> {
 
     let js_source = fs::read_to_string(&args.js)
         .with_context(|| format!("failed to read JS file: {}", args.js.display()))?;
+
+    let js_source = if args.minify {
+        let allocator = Allocator::default();
+        let source_type = SourceType::mjs();
+        let ret = OxcParser::new(&allocator, &js_source, source_type).parse();
+        let mut program = ret.program;
+
+        let options = MinifierOptions {
+            mangle: Some(MangleOptions {
+                top_level: Some(false),
+                ..Default::default()
+            }),
+            compress: Some(CompressOptions {
+                unused: CompressOptionsUnused::Keep,
+                keep_names: CompressOptionsKeepNames::all_false(),
+                ..CompressOptions::default()
+            }),
+        };
+        let ret = Minifier::new(options).minify(&allocator, &mut program);
+        Codegen::new()
+            .with_scoping(ret.scoping)
+            .build(&program)
+            .code
+    } else {
+        js_source
+    };
 
     println!("componentize-qjs");
     println!("  WIT:    {}", args.wit.display());

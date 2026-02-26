@@ -133,13 +133,30 @@ impl TestCase {
 
         let wasm = rt.block_on(componentize_qjs::componentize(&opts))?;
 
+        ComponentInstance::from_wasm(wasm, self.env_vars, self.expectations)
+    }
+}
+
+struct ComponentInstance {
+    store: Store<WasiCtxState>,
+    inner: Instance,
+    expectations: Vec<Expectation>,
+}
+
+impl ComponentInstance {
+    /// Instantiate a component from pre-built wasm bytes.
+    fn from_wasm(
+        wasm: Vec<u8>,
+        env_vars: Vec<(String, String)>,
+        expectations: Vec<Expectation>,
+    ) -> anyhow::Result<Self> {
         let engine = engine();
         let component = Component::new(engine, &wasm)?;
 
         let mut wasi_builder = WasiCtxBuilder::new();
-        if !self.env_vars.is_empty() {
+        if !env_vars.is_empty() {
             wasi_builder.inherit_env();
-            for (k, v) in &self.env_vars {
+            for (k, v) in &env_vars {
                 wasi_builder.env(k, v);
             }
         }
@@ -155,18 +172,9 @@ impl TestCase {
         Ok(ComponentInstance {
             store,
             inner: instance,
-            expectations: self.expectations,
+            expectations,
         })
     }
-}
-
-struct ComponentInstance {
-    store: Store<WasiCtxState>,
-    inner: Instance,
-    expectations: Vec<Expectation>,
-}
-
-impl ComponentInstance {
     /// Call an exported function with the given params and return results.
     fn call(&mut self, name: &str, params: &[Val], result_count: usize) -> Vec<Val> {
         let func = self
@@ -205,34 +213,33 @@ fn componentize_qjs() -> assert_cmd::Command {
     assert_cmd::cargo::cargo_bin_cmd!()
 }
 
-#[test]
-fn test_cli_output() {
+/// write WIT + JS to a temp dir, run the CLI, return the output wasm path and temp
+fn run_cli_build(wit: &str, js: &str, extra_args: &[&str]) -> (PathBuf, TempDir) {
     let dir = TempDir::new().unwrap();
 
-    let wit_path = dir.path().join("hello.wit");
-    fs::write(
-        &wit_path,
-        "package test:hello;\nworld hello { export add: func(a: u32, b: u32) -> u32; }",
-    )
-    .unwrap();
+    let wit_path = dir.path().join("test.wit");
+    fs::write(&wit_path, wit).unwrap();
 
-    let js_path = dir.path().join("hello.js");
-    fs::write(&js_path, "function add(a, b) { return a + b; }").unwrap();
+    let js_path = dir.path().join("test.js");
+    fs::write(&js_path, js).unwrap();
 
-    let output = dir.path().join("hello.wasm");
+    let output = dir.path().join("output.wasm");
 
-    componentize_qjs()
-        .arg("--wit")
+    let mut cmd = componentize_qjs();
+    cmd.arg("--wit")
         .arg(&wit_path)
         .arg("--js")
         .arg(&js_path)
         .arg("--output")
-        .arg(&output)
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Component written to"));
+        .arg(&output);
 
+    for arg in extra_args {
+        cmd.arg(arg);
+    }
+
+    cmd.assert().success();
     assert!(output.exists(), "Output wasm file should exist");
+    (output, dir)
 }
 
 #[test]
@@ -261,32 +268,76 @@ fn test_cli_errors() {
 }
 
 #[test]
-fn test_cli_stub_wasi() {
-    let dir = TempDir::new().unwrap();
-
-    let wit_path = dir.path().join("hello.wit");
-    fs::write(
-        &wit_path,
+fn test_cli_output() {
+    let (output, _dir) = run_cli_build(
         "package test:hello;\nworld hello { export add: func(a: u32, b: u32) -> u32; }",
-    )
-    .unwrap();
+        "function add(a, b) { return a + b; }",
+        &[],
+    );
 
-    let js_path = dir.path().join("hello.js");
-    fs::write(&js_path, "function add(a, b) { return a + b; }").unwrap();
+    let wasm = fs::read(&output).unwrap();
+    let mut inst =
+        ComponentInstance::from_wasm(wasm, vec![], vec![]).expect("should instantiate component");
 
-    let output = dir.path().join("hello-stubbed.wasm");
+    assert_eq!(inst.call1("add", &[Val::U32(3), Val::U32(4)]), Val::U32(7),);
+}
 
-    componentize_qjs()
-        .arg("--wit")
-        .arg(&wit_path)
-        .arg("--js")
-        .arg(&js_path)
-        .arg("--output")
-        .arg(&output)
-        .arg("--stub-wasi")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Stubbing WASI imports"));
+#[test]
+fn test_cli_stub_wasi() {
+    let (output, _dir) = run_cli_build(
+        "package test:hello;\nworld hello { export add: func(a: u32, b: u32) -> u32; }",
+        "function add(a, b) { return a + b; }",
+        &["--stub-wasi"],
+    );
+
+    let wasm = fs::read(&output).unwrap();
+    let mut inst = ComponentInstance::from_wasm(wasm, vec![], vec![])
+        .expect("should instantiate stubbed component");
+
+    assert_eq!(inst.call1("add", &[Val::U32(3), Val::U32(4)]), Val::U32(7),);
+}
+
+#[test]
+fn test_cli_minify() {
+    let wit = r#"
+        package test:minify;
+        world minify-test {
+            export add: func(a: u32, b: u32) -> u32;
+            export greet: func(name: string) -> string;
+        }
+    "#;
+    let js = r#"
+        // This comment and whitespace should be stripped by minification
+        // but the logic should remain identical
+
+        /**
+         * Foo bar baz.
+         */
+        function add(a, b) {
+            const result = a + b;
+            return result;
+        }
+
+        /**
+         * Foo bar baz.
+         */
+        function greet(name) {
+            const greeting = "Hello, " + name + "!";
+            return greeting;
+        }
+    "#;
+
+    let (output, _dir) = run_cli_build(wit, js, &["--minify"]);
+
+    let wasm = fs::read(&output).unwrap();
+    let mut inst = ComponentInstance::from_wasm(wasm, vec![], vec![])
+        .expect("should instantiate minified component");
+
+    assert_eq!(inst.call1("add", &[Val::U32(3), Val::U32(4)]), Val::U32(7),);
+    assert_eq!(
+        inst.call1("greet", &[Val::String("World".into())]),
+        Val::String("Hello, World!".into()),
+    );
 }
 
 #[test]

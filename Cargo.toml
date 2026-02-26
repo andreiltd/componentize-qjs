@@ -32,6 +32,11 @@ wasmtime-wasi = "42"
 wasmtime-wizer = { version = "42", features = ["component-model", "wasmtime"] }
 wac-graph = "0.9"
 indexmap = "2"
+oxc_minifier = "0.115.0"
+oxc_allocator = "0.115.0"
+oxc_codegen = "0.115.0"
+oxc_parser = "0.115.0"
+oxc_span = "0.115.0"
 
 [build-dependencies]
 anyhow = "1.0"
@@ -51,3 +56,6 @@ optimize-size = []
 
 [profile.release]
 lto = true
+
+[profile.test]
+opt-level = 3
