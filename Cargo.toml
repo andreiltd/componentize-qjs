@@ -48,6 +48,7 @@ ureq = "3"
 [dev-dependencies]
 assert_cmd = "2.0"
 predicates = "3.1"
+quickcheck = "1"
 tempfile = "3.13"
 
 [features]

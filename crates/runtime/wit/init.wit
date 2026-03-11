@@ -1,5 +1,5 @@
 package local:init;
 
 world init {
-  export init: func(script: string) -> result<_, string>;
+  export init: func(shim: string, script: string) -> result<_, string>;
 }

@@ -13,7 +13,7 @@ const BINARYEN_VERSION: &str = "126";
 const BINARYEN_DL_URL: &str = "https://github.com/WebAssembly/binaryen/releases/download";
 
 fn main() -> Result<()> {
-    println!("cargo:rerun-if-changed=crates/runtime/src/lib.rs");
+    println!("cargo:rerun-if-changed=crates/runtime/src");
     println!("cargo:rerun-if-changed=crates/runtime/Cargo.toml");
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").context("OUT_DIR not set")?);

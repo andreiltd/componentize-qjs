@@ -1,4 +1,5 @@
 pub mod cli;
+pub mod codegen;
 pub mod stubwasi;
 
 use std::path::Path;
@@ -54,6 +55,7 @@ pub async fn componentize(opts: &ComponentizeOpts<'_>) -> Result<Vec<u8>> {
     let (pkg_id, _) = resolve.push_path(opts.wit_path)?;
     let world_id = resolve.select_world(&[pkg_id], opts.world_name)?;
 
+    let shim = codegen::generate_shim(&resolve, world_id);
     let mut wit_dylib = wit_dylib::create(&resolve, world_id, None);
 
     wit_component::embed_component_metadata(
@@ -74,7 +76,7 @@ pub async fn componentize(opts: &ComponentizeOpts<'_>) -> Result<Vec<u8>> {
         .encode()
         .context("failed to link and encode component")?;
 
-    let mut component = wizer_init(&pre_wizer_component, opts.js_source).await?;
+    let mut component = wizer_init(&pre_wizer_component, &shim, opts.js_source).await?;
 
     if opts.stub_wasi {
         component = stub_wasi_imports(&component).context("failed to stub WASI imports")?;
@@ -83,7 +85,7 @@ pub async fn componentize(opts: &ComponentizeOpts<'_>) -> Result<Vec<u8>> {
     Ok(component)
 }
 
-async fn wizer_init(component: &[u8], js: &str) -> Result<Vec<u8>> {
+async fn wizer_init(component: &[u8], shim: &str, js: &str) -> Result<Vec<u8>> {
     let stdout = MemoryOutputPipe::new(10000);
     let stderr = MemoryOutputPipe::new(10000);
 
@@ -111,7 +113,7 @@ async fn wizer_init(component: &[u8], js: &str) -> Result<Vec<u8>> {
     let instance = linker.instantiate_async(&mut store, &comp).await?;
 
     let init = Init::new(&mut store, &instance)?;
-    init.call_init(&mut store, js)
+    init.call_init(&mut store, shim, js)
         .await?
         .map_err(|e| anyhow!("{e}"))
         .with_context(move || {
