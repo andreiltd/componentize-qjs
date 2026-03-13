@@ -354,7 +354,7 @@ const { component } = await componentize({
 
 This project builds on ideas and code from:
 
-- [ComponentizeJS](https://github.com/bytecodealliance/ComponentizeJS) by Joel Dice
+- [ComponentizeJS](https://github.com/dicej/componentize-js) by Joel Dice
 - [lua-component-demo](https://github.com/alexcrichton/lua-component-demo) by Alex Crichton
 
 ## License
