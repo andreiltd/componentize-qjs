@@ -477,7 +477,7 @@ impl Call for QjsCallContext {
                 });
 
                 let obj = rquickjs::Object::new(ctx.clone()).unwrap();
-                obj.set("componentize_js_handle", handle).unwrap();
+                obj.set("__cqjs_handle", handle).unwrap();
                 obj.into_value()
             };
             self.push_value(ctx, val);
@@ -490,12 +490,12 @@ impl Call for QjsCallContext {
                 let persistent = ctx.resources().remove(handle as usize);
                 let val = persistent.restore(ctx).unwrap();
                 if let Some(obj) = val.as_object() {
-                    let _ = obj.remove("componentize_js_handle");
+                    let _ = obj.remove("__cqjs_handle");
                 }
                 val
             } else {
                 let obj = rquickjs::Object::new(ctx.clone()).unwrap();
-                obj.set("componentize_js_handle", handle).unwrap();
+                obj.set("__cqjs_handle", handle).unwrap();
                 obj.into_value()
             };
             self.push_value(ctx, val);

@@ -17,9 +17,7 @@ pub(crate) fn register(ctx: &rquickjs::Ctx<'_>, wit_def: Wit) -> rquickjs::Resul
     register_stream_classes(ctx)?;
     register_future_classes(ctx)?;
     register_imports(ctx, wit_def)?;
-    register_async_exports(ctx, wit_def)?;
-    register_stream_future_factories(ctx)?;
-    register_memory_introspection(ctx)?;
+    register_cqjs_namespace(ctx, wit_def)?;
     Ok(())
 }
 
@@ -189,11 +187,14 @@ fn call_import<'js>(
     }
 }
 
-/// Build `componentize_js_async_exports` object.
+/// Build the `asyncExports` object for the `__cqjs` namespace.
 ///
 /// Each wrapper calls the user's export function, then chains `.then()` to
 /// signal `task_return` back to the host.
-fn register_async_exports(ctx: &rquickjs::Ctx<'_>, wit_def: Wit) -> rquickjs::Result<()> {
+fn build_async_exports<'js>(
+    ctx: &rquickjs::Ctx<'js>,
+    wit_def: Wit,
+) -> rquickjs::Result<rquickjs::Object<'js>> {
     let exports = rquickjs::Object::new(ctx.clone())?;
     let mut iface_objs: HashMap<String, rquickjs::Object<'_>> = HashMap::new();
 
@@ -278,43 +279,40 @@ fn register_async_exports(ctx: &rquickjs::Ctx<'_>, wit_def: Wit) -> rquickjs::Re
         exports.set(name.as_str(), obj)?;
     }
 
-    ctx.globals()
-        .set("componentize_js_async_exports", exports)?;
-    Ok(())
+    Ok(exports)
 }
 
-/// Register `__componentize_make_stream` and `__componentize_make_future`
-/// on globalThis for the js shim to create stream/future pairs.
-fn register_stream_future_factories(ctx: &rquickjs::Ctx<'_>) -> rquickjs::Result<()> {
-    let globals = ctx.globals();
+/// Register the `__cqjs` namespace object on globalThis.
+///
+/// Consolidates all internal bridge globals into a single frozen object:
+/// - `makeStream(typeIndex)` — create a stream pair
+/// - `makeFuture(typeIndex)` — create a future pair
+/// - `getMemoryUsage()` — return QuickJS memory statistics
+/// - `runGc()` — trigger QuickJS garbage collection
+/// - `asyncExports` — object containing async export wrappers
+fn register_cqjs_namespace(ctx: &rquickjs::Ctx<'_>, wit_def: Wit) -> rquickjs::Result<()> {
+    let ns = rquickjs::Object::new(ctx.clone())?;
 
-    globals.set(
-        "__componentize_make_stream",
+    // Stream/future factories
+    ns.set(
+        "makeStream",
         Function::new(
             ctx.clone(),
             coerce_fn(move |ctx: Ctx<'_>, args: Rest<Value<'_>>| make_stream(ctx, args)),
         )?,
     )?;
 
-    globals.set(
-        "__componentize_make_future",
+    ns.set(
+        "makeFuture",
         Function::new(
             ctx.clone(),
             coerce_fn(move |ctx: Ctx<'_>, args: Rest<Value<'_>>| make_future(ctx, args)),
         )?,
     )?;
 
-    Ok(())
-}
-
-/// Register `__componentize_get_memory_usage` and `__componentize_run_gc`
-/// on globalThis for memory introspection from JS.
-///
-fn register_memory_introspection(ctx: &rquickjs::Ctx<'_>) -> rquickjs::Result<()> {
-    let globals = ctx.globals();
-
-    globals.set(
-        "__componentize_get_memory_usage",
+    // Memory introspection
+    ns.set(
+        "getMemoryUsage",
         Function::new(
             ctx.clone(),
             coerce_fn(
@@ -342,8 +340,8 @@ fn register_memory_introspection(ctx: &rquickjs::Ctx<'_>) -> rquickjs::Result<()
         )?,
     )?;
 
-    globals.set(
-        "__componentize_run_gc",
+    ns.set(
+        "runGc",
         Function::new(
             ctx.clone(),
             coerce_fn(
@@ -358,5 +356,15 @@ fn register_memory_introspection(ctx: &rquickjs::Ctx<'_>) -> rquickjs::Result<()
         )?,
     )?;
 
+    // Async export wrappers
+    let async_exports = build_async_exports(ctx, wit_def)?;
+    ns.set("asyncExports", async_exports)?;
+
+    // Freeze and install on globalThis
+    let object_ctor: rquickjs::Object = ctx.globals().get("Object")?;
+    let freeze_fn: Function = object_ctor.get("freeze")?;
+    freeze_fn.call::<_, Value>((ns.clone(),))?;
+
+    ctx.globals().set("__cqjs", ns)?;
     Ok(())
 }

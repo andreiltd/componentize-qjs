@@ -60,12 +60,12 @@ impl<'a> EmitContext<'a> {
 
         let streams: Vec<_> = self.streams.iter().copied().collect();
         if !streams.is_empty() {
-            self.emit_constructor("Stream", "__componentize_make_stream", &streams);
+            self.emit_constructor("Stream", "__cqjs.makeStream", &streams);
         }
 
         let futures: Vec<_> = self.futures.iter().copied().collect();
         if !futures.is_empty() {
-            self.emit_constructor("Future", "__componentize_make_future", &futures);
+            self.emit_constructor("Future", "__cqjs.makeFuture", &futures);
         }
     }
 

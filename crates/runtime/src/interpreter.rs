@@ -72,15 +72,15 @@ impl Interpreter for QjsInterpreter {
                     arr.set(i, v).unwrap();
                 }
                 let globals = ctx.globals();
-                globals.set("__componentize_ctor_args", arr).unwrap();
-                globals.set("__componentize_ctor_fn", ctor).unwrap();
+                globals.set("__cqjs_ctor_args", arr).unwrap();
+                globals.set("__cqjs_ctor_fn", ctor).unwrap();
 
                 let instance: Value = ctx
-                    .eval("new __componentize_ctor_fn(...__componentize_ctor_args)")
+                    .eval("new __cqjs_ctor_fn(...__cqjs_ctor_args)")
                     .unwrap_or_else(|e| panic!("Failed to construct '{}': {:?}", class_name, e));
 
-                let _ = globals.remove("__componentize_ctor_args");
-                let _ = globals.remove("__componentize_ctor_fn");
+                let _ = globals.remove("__cqjs_ctor_args");
+                let _ = globals.remove("__cqjs_ctor_fn");
 
                 cx.push_value(ctx, instance);
             });
@@ -172,9 +172,11 @@ impl Interpreter for QjsInterpreter {
 
             let globals = ctx.globals();
 
-            let async_exports: rquickjs::Object = globals
-                .get("componentize_js_async_exports")
-                .expect("componentize_js_async_exports not found");
+            let cqjs: rquickjs::Object = globals.get("__cqjs").expect("__cqjs namespace not found");
+
+            let async_exports: rquickjs::Object = cqjs
+                .get("asyncExports")
+                .expect("__cqjs.asyncExports not found");
 
             let wrapper_obj = if let Some(interface) = func.interface() {
                 async_exports.get(fn_lookup(ctx, interface)).unwrap()

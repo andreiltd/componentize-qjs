@@ -30,8 +30,8 @@ function resetAccumulator() {
 }
 
 function getMemoryUsage() {
-    return __componentize_get_memory_usage();
+    return __cqjs.getMemoryUsage();
 }
 function runGc() {
-    __componentize_run_gc();
+    __cqjs.runGc();
 }

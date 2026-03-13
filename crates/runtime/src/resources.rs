@@ -63,8 +63,8 @@ impl ResourceTable {
 /// Extract the canonical handle from an imported resource wrapper object.
 pub(crate) fn imported_resource_to_handle(val: &Value<'_>) -> u32 {
     val.as_object()
-        .and_then(|obj| obj.get::<_, u32>("componentize_js_handle").ok())
-        .expect("expected resource wrapper with componentize_js_handle")
+        .and_then(|obj| obj.get::<_, u32>("__cqjs_handle").ok())
+        .expect("expected resource wrapper with __cqjs_handle")
 }
 
 /// Convert a js object to a canonical handle for an exported resource.
@@ -74,7 +74,7 @@ pub(crate) fn exported_resource_to_handle<'js>(
     val: &Value<'js>,
 ) -> u32 {
     let obj = val.as_object().expect("expected resource object");
-    if let Ok(handle) = obj.get::<_, u32>("componentize_js_handle") {
+    if let Ok(handle) = obj.get::<_, u32>("__cqjs_handle") {
         return handle;
     }
 
@@ -82,6 +82,6 @@ pub(crate) fn exported_resource_to_handle<'js>(
     let new_fn = ty.new().expect("exported resource must have new()");
     let handle = unsafe { new_fn(rep) };
 
-    obj.set("componentize_js_handle", handle).unwrap();
+    obj.set("__cqjs_handle", handle).unwrap();
     handle
 }

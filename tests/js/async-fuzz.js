@@ -30,8 +30,8 @@ async function resetAccumulator() {
 }
 
 async function getMemoryUsage() {
-    return __componentize_get_memory_usage();
+    return __cqjs.getMemoryUsage();
 }
 async function runGc() {
-    __componentize_run_gc();
+    __cqjs.runGc();
 }
