@@ -19,6 +19,7 @@ pub(crate) fn register(ctx: &rquickjs::Ctx<'_>, wit_def: Wit) -> rquickjs::Resul
     register_imports(ctx, wit_def)?;
     register_async_exports(ctx, wit_def)?;
     register_stream_future_factories(ctx)?;
+    register_memory_introspection(ctx)?;
     Ok(())
 }
 
@@ -300,6 +301,60 @@ fn register_stream_future_factories(ctx: &rquickjs::Ctx<'_>) -> rquickjs::Result
         Function::new(
             ctx.clone(),
             coerce_fn(move |ctx: Ctx<'_>, args: Rest<Value<'_>>| make_future(ctx, args)),
+        )?,
+    )?;
+
+    Ok(())
+}
+
+/// Register `__componentize_get_memory_usage` and `__componentize_run_gc`
+/// on globalThis for memory introspection from JS.
+///
+fn register_memory_introspection(ctx: &rquickjs::Ctx<'_>) -> rquickjs::Result<()> {
+    let globals = ctx.globals();
+
+    globals.set(
+        "__componentize_get_memory_usage",
+        Function::new(
+            ctx.clone(),
+            coerce_fn(
+                move |ctx: Ctx<'_>, _args: Rest<Value<'_>>| -> rquickjs::Result<Value<'_>> {
+                    let usage = unsafe {
+                        let rt = rquickjs::qjs::JS_GetRuntime(ctx.as_raw().as_ptr());
+                        let mut usage = std::mem::MaybeUninit::uninit();
+                        rquickjs::qjs::JS_ComputeMemoryUsage(rt, usage.as_mut_ptr());
+                        usage.assume_init()
+                    };
+                    let obj = rquickjs::Object::new(ctx.clone())?;
+                    obj.set("mallocSize", usage.malloc_size)?;
+                    obj.set("mallocCount", usage.malloc_count)?;
+                    obj.set("memoryUsedSize", usage.memory_used_size)?;
+                    obj.set("objCount", usage.obj_count)?;
+                    obj.set("strCount", usage.str_count)?;
+                    obj.set("atomCount", usage.atom_count)?;
+                    obj.set("atomSize", usage.atom_size)?;
+                    obj.set("propCount", usage.prop_count)?;
+                    obj.set("shapeCount", usage.shape_count)?;
+                    obj.set("arrayCount", usage.array_count)?;
+                    Ok(obj.into_value())
+                },
+            ),
+        )?,
+    )?;
+
+    globals.set(
+        "__componentize_run_gc",
+        Function::new(
+            ctx.clone(),
+            coerce_fn(
+                move |ctx: Ctx<'_>, _args: Rest<Value<'_>>| -> rquickjs::Result<Value<'_>> {
+                    unsafe {
+                        let rt = rquickjs::qjs::JS_GetRuntime(ctx.as_raw().as_ptr());
+                        rquickjs::qjs::JS_RunGC(rt);
+                    }
+                    Ok(Value::new_undefined(ctx))
+                },
+            ),
         )?,
     )?;
 

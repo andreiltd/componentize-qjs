@@ -1,0 +1,62 @@
+package test:fuzz;
+
+world fuzz {
+    // Scalars
+    export echo-u8: func(v: u8) -> u8;
+    export echo-u16: func(v: u16) -> u16;
+    export echo-u32: func(v: u32) -> u32;
+    export echo-s32: func(v: s32) -> s32;
+    export echo-s64: func(v: s64) -> s64;
+    export echo-u64: func(v: u64) -> u64;
+    export echo-f64: func(v: f64) -> f64;
+    export echo-bool: func(v: bool) -> bool;
+    export echo-char: func(v: char) -> char;
+
+    // Strings
+    export echo-string: func(v: string) -> string;
+    export concat-strings: func(a: string, b: string) -> string;
+
+    // Lists
+    export echo-bytes: func(v: list<u8>) -> list<u8>;
+    export echo-list-u32: func(v: list<u32>) -> list<u32>;
+    export echo-list-string: func(v: list<string>) -> list<string>;
+
+    // Record
+    record point { x: f64, y: f64 }
+    export echo-record: func(v: point) -> point;
+
+    // Tuple
+    export echo-tuple: func(v: tuple<string, u32>) -> tuple<string, u32>;
+
+    // Option
+    export echo-option-string: func(v: option<string>) -> option<string>;
+
+    // Result
+    export echo-result: func(v: result<string, u32>) -> result<string, u32>;
+
+    // Variant
+    variant shape {
+        circle(f64),
+        rectangle(tuple<f64, f64>),
+        none,
+    }
+    export echo-variant: func(v: shape) -> shape;
+
+    // Enum + Flags
+    enum color { red, green, blue }
+    flags permissions { read, write, execute }
+    export echo-enum: func(v: color) -> color;
+    export echo-flags: func(v: permissions) -> permissions;
+
+    // Stateful accumulator
+    export accumulate: func(v: string) -> list<string>;
+    export reset-accumulator: func();
+
+    // Memory introspection
+    record memory-usage {
+        malloc-size: s64,
+        memory-used-size: s64,
+    }
+    export get-memory-usage: func() -> memory-usage;
+    export run-gc: func();
+}

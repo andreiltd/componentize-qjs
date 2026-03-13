@@ -1,0 +1,62 @@
+package test:fuzz;
+
+world async-fuzz {
+    // Scalars
+    export echo-u8: async func(v: u8) -> u8;
+    export echo-u16: async func(v: u16) -> u16;
+    export echo-u32: async func(v: u32) -> u32;
+    export echo-s32: async func(v: s32) -> s32;
+    export echo-s64: async func(v: s64) -> s64;
+    export echo-u64: async func(v: u64) -> u64;
+    export echo-f64: async func(v: f64) -> f64;
+    export echo-bool: async func(v: bool) -> bool;
+    export echo-char: async func(v: char) -> char;
+
+    // Strings
+    export echo-string: async func(v: string) -> string;
+    export concat-strings: async func(a: string, b: string) -> string;
+
+    // Lists
+    export echo-bytes: async func(v: list<u8>) -> list<u8>;
+    export echo-list-u32: async func(v: list<u32>) -> list<u32>;
+    export echo-list-string: async func(v: list<string>) -> list<string>;
+
+    // Record
+    record point { x: f64, y: f64 }
+    export echo-record: async func(v: point) -> point;
+
+    // Tuple
+    export echo-tuple: async func(v: tuple<string, u32>) -> tuple<string, u32>;
+
+    // Option
+    export echo-option-string: async func(v: option<string>) -> option<string>;
+
+    // Result
+    export echo-result: async func(v: result<string, u32>) -> result<string, u32>;
+
+    // Variant
+    variant shape {
+        circle(f64),
+        rectangle(tuple<f64, f64>),
+        none,
+    }
+    export echo-variant: async func(v: shape) -> shape;
+
+    // Enum + Flags
+    enum color { red, green, blue }
+    flags permissions { read, write, execute }
+    export echo-enum: async func(v: color) -> color;
+    export echo-flags: async func(v: permissions) -> permissions;
+
+    // Stateful accumulator
+    export accumulate: async func(v: string) -> list<string>;
+    export reset-accumulator: async func();
+
+    // Memory introspection
+    record memory-usage {
+        malloc-size: s64,
+        memory-used-size: s64,
+    }
+    export get-memory-usage: async func() -> memory-usage;
+    export run-gc: async func();
+}
