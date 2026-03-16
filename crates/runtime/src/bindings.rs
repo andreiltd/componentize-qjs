@@ -38,25 +38,19 @@ fn partition_imports(wit: Wit) -> HashMap<Option<&'static str>, WitInterface> {
         ret.entry(func.interface()).or_default().funcs.push(func);
     }
     for flags in wit.iter_flags() {
-        if flags.interface().is_some() {
-            ret.entry(flags.interface()).or_default().flags.push(flags);
-        }
+        ret.entry(flags.interface()).or_default().flags.push(flags);
     }
     for enum_ty in wit.iter_enums() {
-        if enum_ty.interface().is_some() {
-            ret.entry(enum_ty.interface())
-                .or_default()
-                .enums
-                .push(enum_ty);
-        }
+        ret.entry(enum_ty.interface())
+            .or_default()
+            .enums
+            .push(enum_ty);
     }
     for variant in wit.iter_variants() {
-        if variant.interface().is_some() {
-            ret.entry(variant.interface())
-                .or_default()
-                .variants
-                .push(variant);
-        }
+        ret.entry(variant.interface())
+            .or_default()
+            .variants
+            .push(variant);
     }
     ret
 }
