@@ -250,11 +250,18 @@ fn build_async_exports<'js>(
 
                 let catch_cb = Function::new(
                     ctx.clone(),
-                    coerce_fn(move |ctx: Ctx<'_>, _args: Rest<Value<'_>>| {
-                        let func = ctx.wit().export_func(func_index);
-                        let mut call = QjsCallContext::default();
-                        func.call_task_return(&mut call);
-                        Ok(Value::new_undefined(ctx))
+                    coerce_fn(move |ctx: Ctx<'_>, args: Rest<Value<'_>>| {
+                        let reason = args
+                            .0
+                            .into_iter()
+                            .next()
+                            .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
+                        let msg = reason
+                            .as_object()
+                            .and_then(|obj| obj.get::<_, rquickjs::String>("message").ok())
+                            .and_then(|s| s.to_string().ok())
+                            .unwrap_or_else(|| format!("{reason:?}"));
+                        panic!("async export rejected: {msg}");
                     }),
                 )?;
 
