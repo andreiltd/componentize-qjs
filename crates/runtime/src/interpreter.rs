@@ -114,17 +114,31 @@ impl Interpreter for QjsInterpreter {
                 }
             });
         } else if let Some(rest) = name.strip_prefix("[static]") {
-            // Static resource method: like a regular function on the class
-            let (_resource, method_name) = rest
+            // Static resource method: look up Class on the interface object,
+            // then call the static method on the class.
+            let (resource, method_name) = rest
                 .split_once('.')
                 .unwrap_or_else(|| panic!("invalid static method name: {name}"));
 
             with_ctx(|ctx| {
                 let method_name = fn_lookup(ctx, method_name);
+                let class_name = resource.to_upper_camel_case();
                 let globals = ctx.globals();
-                let js_func: rquickjs::Function = globals
-                    .get(method_name)
-                    .unwrap_or_else(|e| panic!("Failed to get '{}': {:?}", method_name, e));
+                let class_obj: rquickjs::Object = if let Some(iface) = func.interface() {
+                    let iface_obj: rquickjs::Object = globals
+                        .get(iface_lookup(ctx, iface))
+                        .unwrap_or_else(|e| panic!("interface '{}' not found: {:?}", iface, e));
+                    iface_obj
+                        .get(class_name.as_str())
+                        .unwrap_or_else(|e| panic!("class '{}' not found: {:?}", class_name, e))
+                } else {
+                    globals
+                        .get(class_name.as_str())
+                        .unwrap_or_else(|e| panic!("class '{}' not found: {:?}", class_name, e))
+                };
+                let js_func: rquickjs::Function = class_obj.get(method_name).unwrap_or_else(|e| {
+                    panic!("static method '{}' not found: {:?}", method_name, e)
+                });
                 let args = cx.stack_into_args(ctx);
                 let result = js_func
                     .call_arg::<Value>(args)

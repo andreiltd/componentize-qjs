@@ -1588,3 +1588,171 @@ fn test_exported_resource() {
         "value should be 43 after increment"
     );
 }
+
+#[test]
+fn test_static_resource_method_in_interface() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let wit_path = dir.path().join("test.wit");
+    std::fs::write(
+        &wit_path,
+        r#"
+        package test:static-bug;
+
+        interface widget-api {
+            resource widget {
+                constructor(name: string);
+                get-name: func() -> string;
+                create-default: static func() -> widget;
+            }
+        }
+
+        world static-test {
+            export widget-api;
+        }
+        "#,
+    )
+    .unwrap();
+
+    let opts = componentize_qjs::ComponentizeOpts {
+        wit_path: &wit_path,
+        js_source: r#"
+            class Widget {
+                constructor(name) { this.name = name; }
+                getName() { return this.name; }
+                static createDefault() { return new Widget("default"); }
+            }
+            globalThis.widgetApi = { Widget };
+        "#,
+        world_name: None,
+        stub_wasi: true,
+    };
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let wasm = rt.block_on(componentize_qjs::componentize(&opts)).unwrap();
+
+    let engine = common::engine();
+    let component = wasmtime::component::Component::new(engine, &wasm).unwrap();
+
+    let mut wasi_builder = wasmtime_wasi::WasiCtxBuilder::new();
+    let wasi = wasi_builder.build();
+    let table = wasmtime::component::ResourceTable::new();
+    let mut store = wasmtime::Store::new(engine, common::WasiCtxState { wasi, table });
+
+    let mut linker = wasmtime::component::Linker::new(engine);
+    wasmtime_wasi::p2::add_to_linker_sync(&mut linker).unwrap();
+    let instance = linker.instantiate(&mut store, &component).unwrap();
+
+    let iface_idx = instance
+        .get_export_index(&mut store, None, "test:static-bug/widget-api")
+        .expect("interface export not found");
+
+    // Call the static method — this should work but panics because
+    // the runtime looks for "createDefault" in globals instead of the
+    // interface object.
+    let static_idx = instance
+        .get_export_index(
+            &mut store,
+            Some(&iface_idx),
+            "[static]widget.create-default",
+        )
+        .expect("[static]widget.create-default not found");
+    let static_fn = instance.get_func(&mut store, static_idx).unwrap();
+
+    let mut results = [Val::Bool(false)];
+    static_fn.call(&mut store, &[], &mut results).unwrap();
+
+    // If we got here, we have a resource handle. Verify it works.
+    let get_name_idx = instance
+        .get_export_index(&mut store, Some(&iface_idx), "[method]widget.get-name")
+        .expect("[method]widget.get-name not found");
+    let get_name = instance.get_func(&mut store, get_name_idx).unwrap();
+
+    let mut name_results = [Val::Bool(false)];
+    get_name
+        .call(&mut store, &results, &mut name_results)
+        .unwrap();
+    assert_eq!(
+        name_results[0],
+        Val::String("default".into()),
+        "static factory should produce widget with name 'default'"
+    );
+}
+
+#[tokio::test]
+async fn test_async_export_rejection_propagates() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:async-reject;
+            world async-reject {
+                export will-throw: async func();
+            }
+            "#,
+        )
+        .script(
+            r#"
+            async function willThrow() {
+                throw new Error("this should not be silently swallowed");
+            }
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    // The host calls a void async export that throws. The rejection should
+    // propagate as an error, not be silently swallowed.
+    let result = instance.call_async("will-throw", &[], 0).await;
+    assert!(
+        result.is_err(),
+        "async export that throws should return an error, not Ok"
+    );
+}
+
+#[test]
+fn test_root_level_flags() {
+    let result = TestCase::new()
+        .wit(
+            r#"
+            package test:root-flags;
+            world root-flags {
+                flags permissions {
+                    read,
+                    write,
+                    execute,
+                }
+                export check: func(p: permissions) -> string;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            function check(p) {
+                const parts = [];
+                if (p & Permissions.Read) parts.push("read");
+                if (p & Permissions.Write) parts.push("write");
+                if (p & Permissions.Execute) parts.push("execute");
+                return parts.join(",");
+            }
+            "#,
+        )
+        .stub_wasi()
+        .build();
+
+    let mut instance = result.expect(
+        "componentization should succeed for world-level flags — \
+         if this fails, partition_imports is dropping root-level types",
+    );
+
+    let flags_val = Val::Flags(vec!["read".into(), "execute".into()]);
+    let ret = instance.call1("check", &[flags_val]);
+    assert_eq!(
+        ret,
+        Val::String("read,execute".into()),
+        "root-level flags should round-trip through the component"
+    );
+}
