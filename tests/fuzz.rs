@@ -256,6 +256,7 @@ mod fuzz {
                 js_source: &js,
                 world_name: None,
                 stub_wasi: true,
+                disable_gc: false,
             };
 
             let rt = tokio::runtime::Builder::new_current_thread()
@@ -456,6 +457,7 @@ mod fuzz_async {
                 js_source: &js,
                 world_name: None,
                 stub_wasi: false,
+                disable_gc: false,
             };
 
             let rt = tokio::runtime::Builder::new_current_thread()

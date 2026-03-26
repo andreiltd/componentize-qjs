@@ -40,6 +40,10 @@ pub struct CliArgs {
     /// Minify the JS source via oxc before componentizing
     #[arg(short = 'm', long)]
     pub minify: bool,
+
+    /// Disable automatic garbage collection in the QuickJS runtime
+    #[arg(long)]
+    pub disable_gc: bool,
 }
 
 /// Run the componentize-qjs CLI with the given arguments.
@@ -97,6 +101,7 @@ pub async fn run(args: Vec<String>) -> Result<()> {
         js_source: &js_source,
         world_name: args.world.as_deref(),
         stub_wasi: args.stub_wasi,
+        disable_gc: args.disable_gc,
     })
     .await?;
 

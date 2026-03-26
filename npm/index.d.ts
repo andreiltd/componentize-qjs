@@ -18,6 +18,8 @@ export interface ComponentizeOpts {
   world?: string
   /** Stub all WASI imports with traps (default: false) */
   stubWasi?: boolean
+  /** Disable automatic garbage collection (default: false) */
+  disableGc?: boolean
 }
 
 /** Result of componentizing a JavaScript source. */

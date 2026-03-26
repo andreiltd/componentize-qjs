@@ -135,8 +135,8 @@ impl JsState {
 struct InitImpl;
 
 impl init::Guest for InitImpl {
-    fn init(shim: String, js: String) -> Result<(), String> {
-        init_js(&shim, &js)
+    fn init(shim: String, js: String, disable_gc: bool) -> Result<(), String> {
+        init_js(&shim, &js, disable_gc)
     }
 }
 
@@ -205,11 +205,18 @@ pub(crate) struct FnNameCache(RefCell<HashMap<&'static str, &'static str>>);
 
 /// Initialize the quickjs runtime with JavaScript source code.
 /// This is called by Wizer during pre-initialization.
-fn init_js(shim: &str, js_source: &str) -> Result<(), String> {
+fn init_js(shim: &str, js_source: &str, disable_gc: bool) -> Result<(), String> {
     let state = JsState::get_or_init();
 
     if state.evaluated.swap(true, Ordering::SeqCst) {
         return Err("JavaScript already evaluated".to_string());
+    }
+
+    if disable_gc {
+        state.with_ctx(|ctx| unsafe {
+            let rt = rquickjs::qjs::JS_GetRuntime(ctx.as_raw().as_ptr());
+            rquickjs::qjs::JS_SetGCThreshold(rt, u32::MAX);
+        });
     }
 
     state.with_ctx(|ctx| {

@@ -139,6 +139,7 @@ impl TestCase {
             js_source: self.script.as_deref().unwrap(),
             world_name: self.world_name.as_deref(),
             stub_wasi: self.stub_wasi,
+            disable_gc: false,
         };
 
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -166,6 +167,7 @@ impl TestCase {
             js_source: self.script.as_deref().unwrap(),
             world_name: self.world_name.as_deref(),
             stub_wasi: self.stub_wasi,
+            disable_gc: false,
         };
 
         let wasm = componentize_qjs::componentize(&opts).await?;

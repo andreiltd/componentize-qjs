@@ -15,6 +15,8 @@ pub struct ComponentizeOpts {
     pub world: Option<String>,
     /// Stub all WASI imports with traps (default: false)
     pub stub_wasi: Option<bool>,
+    /// Disable automatic garbage collection (default: false)
+    pub disable_gc: Option<bool>,
 }
 
 /// Result of componentizing a JavaScript source.
@@ -44,6 +46,7 @@ pub async fn componentize(opts: ComponentizeOpts) -> Result<ComponentizeResult> 
         js_source: &opts.js_source,
         world_name: opts.world.as_deref(),
         stub_wasi: opts.stub_wasi.unwrap_or(false),
+        disable_gc: opts.disable_gc.unwrap_or(false),
     };
 
     let component = componentize_qjs::componentize(&opts)

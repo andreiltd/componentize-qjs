@@ -47,6 +47,8 @@ pub struct ComponentizeOpts<'a> {
     pub world_name: Option<&'a str>,
     /// Stub all WASI imports with traps
     pub stub_wasi: bool,
+    /// Disable automatic garbage collection in the QuickJS runtime
+    pub disable_gc: bool,
 }
 
 /// Convert JavaScript source code into a WebAssembly component.
@@ -76,7 +78,8 @@ pub async fn componentize(opts: &ComponentizeOpts<'_>) -> Result<Vec<u8>> {
         .encode()
         .context("failed to link and encode component")?;
 
-    let mut component = wizer_init(&pre_wizer_component, &shim, opts.js_source).await?;
+    let mut component =
+        wizer_init(&pre_wizer_component, &shim, opts.js_source, opts.disable_gc).await?;
 
     if opts.stub_wasi {
         component = stub_wasi_imports(&component).context("failed to stub WASI imports")?;
@@ -85,7 +88,7 @@ pub async fn componentize(opts: &ComponentizeOpts<'_>) -> Result<Vec<u8>> {
     Ok(component)
 }
 
-async fn wizer_init(component: &[u8], shim: &str, js: &str) -> Result<Vec<u8>> {
+async fn wizer_init(component: &[u8], shim: &str, js: &str, disable_gc: bool) -> Result<Vec<u8>> {
     let stdout = MemoryOutputPipe::new(10000);
     let stderr = MemoryOutputPipe::new(10000);
 
@@ -113,7 +116,7 @@ async fn wizer_init(component: &[u8], shim: &str, js: &str) -> Result<Vec<u8>> {
     let instance = linker.instantiate_async(&mut store, &comp).await?;
 
     let init = Init::new(&mut store, &instance)?;
-    init.call_init(&mut store, shim, js)
+    init.call_init(&mut store, shim, js, disable_gc)
         .await?
         .map_err(|e| anyhow!("{e}"))
         .with_context(move || {
