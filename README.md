@@ -27,14 +27,15 @@ Under the hood it:
 
 ## Prerequisites
 
-Building currently requires a **nightly** Rust toolchain because it relies on the wasi-libc being compiled with `-fPIC`. This requirement will be lifted with an upcoming version of Rust.
+Rust **1.94** or later is required (the `wasm32-wasip2` target needs a recent
+toolchain for PIC support in wasi-libc).
 
 ## Installation
 
 ### Rust CLI (from source)
 
 ```bash
-cargo +nightly install --path .
+cargo install --path .
 ```
 
 ### npm package
@@ -102,7 +103,7 @@ componentize-qjs [OPTIONS] --wit <WIT> --js <JS>
 Build with features:
 
 ```bash
-cargo +nightly build --release --features optimize-size
+cargo build --release --features optimize-size
 ```
 
 ## Using Imports
