@@ -438,21 +438,11 @@ name = "componentize-qjs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "assert_cmd",
  "bytes",
- "clap",
  "flate2",
  "glob",
  "indexmap",
- "oxc_allocator",
- "oxc_codegen",
- "oxc_minifier",
- "oxc_parser",
- "oxc_span",
- "predicates",
- "quickcheck",
  "tar",
- "tempfile",
  "tokio",
  "ureq",
  "wac-graph",
@@ -466,12 +456,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "componentize-qjs-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assert_cmd",
+ "clap",
+ "componentize-qjs",
+ "oxc_allocator",
+ "oxc_codegen",
+ "oxc_minifier",
+ "oxc_parser",
+ "oxc_span",
+ "predicates",
+ "quickcheck",
+ "tempfile",
+ "tokio",
+ "wasmtime",
+ "wasmtime-wasi",
+ "wit-parser 0.244.0",
+]
+
+[[package]]
 name = "componentize-qjs-napi"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
  "componentize-qjs",
+ "componentize-qjs-cli",
  "napi",
  "napi-build",
  "napi-derive",

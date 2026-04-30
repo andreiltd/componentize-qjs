@@ -250,7 +250,7 @@ impl ComponentInstance {
 }
 
 pub fn componentize_qjs() -> assert_cmd::Command {
-    assert_cmd::cargo::cargo_bin_cmd!()
+    assert_cmd::cargo::cargo_bin_cmd!("componentize-qjs")
 }
 
 pub struct AsyncComponentInstance {

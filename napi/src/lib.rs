@@ -63,7 +63,7 @@ pub async fn componentize(opts: ComponentizeOpts) -> Result<ComponentizeResult> 
 /// Returns `true` if the command succeeded, `false` otherwise.
 #[napi]
 pub async fn run_cli(args: Vec<String>) -> Result<bool> {
-    match componentize_qjs::cli::run(args).await {
+    match componentize_qjs_cli::cli::run(args).await {
         Ok(()) => Ok(true),
         Err(e) => {
             if let Some(clap_err) = e.downcast_ref::<clap::Error>() {

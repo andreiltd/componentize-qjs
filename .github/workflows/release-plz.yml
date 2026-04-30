@@ -1,0 +1,63 @@
+name: Release-plz
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  pull-requests: write
+  contents: write
+
+concurrency:
+  group: release-plz-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-plz:
+    name: Release-plz
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@v1.10.15
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install SBOM tools
+        run: |
+          cargo binstall cargo-auditable --force
+          cargo binstall auditable2cdx --force
+
+      - name: Build runtime for packaging
+        shell: bash
+        run: |
+          rm -rf crates/core/prebuilt target/release-plz-package
+          COMPONENTIZE_QJS_RUNTIME_AUDITABLE=1 cargo build --release -p componentize-qjs --target-dir target/release-plz-package
+          mkdir -p crates/core/prebuilt
+          mapfile -t runtimes < <(find target/release-plz-package -path '*/out/runtime.wasm' -type f | sort)
+          test "${#runtimes[@]}" -eq 1 || { printf 'ERROR: expected exactly one runtime.wasm, found %s\n' "${#runtimes[@]}"; printf '%s\n' "${runtimes[@]}"; exit 1; }
+          cp "${runtimes[0]}" crates/core/prebuilt/runtime.wasm
+          test -f crates/core/prebuilt/runtime.wasm || { echo "ERROR: runtime.wasm not found"; exit 1; }
+          sha256sum crates/core/prebuilt/runtime.wasm > crates/core/prebuilt/runtime.wasm.sha256
+          auditable2cdx crates/core/prebuilt/runtime.wasm > crates/core/prebuilt/runtime.wasm.cdx.json
+          test -s crates/core/prebuilt/runtime.wasm.cdx.json || { echo "ERROR: runtime SBOM is empty"; exit 1; }
+          echo "Pre-built runtime.wasm ready ($(wc -c < crates/core/prebuilt/runtime.wasm) bytes)"
+
+      - name: Run release-plz
+        uses: release-plz/action@v0.5
+        with:
+          command: release
+          backend: github
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

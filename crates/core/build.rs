@@ -11,17 +11,68 @@ const WASI_SKD_DL_URL: &str = "https://github.com/WebAssembly/wasi-sdk/releases/
 
 const BINARYEN_VERSION: &str = "126";
 const BINARYEN_DL_URL: &str = "https://github.com/WebAssembly/binaryen/releases/download";
+const RUNTIME_AUDITABLE_ENV: &str = "COMPONENTIZE_QJS_RUNTIME_AUDITABLE";
+const MAX_ARCHIVE_BYTES: u64 = 1_000_000_000;
 
 fn main() -> Result<()> {
-    println!("cargo:rerun-if-changed=crates/runtime/src");
-    println!("cargo:rerun-if-changed=crates/runtime/Cargo.toml");
+    let manifest_dir =
+        PathBuf::from(env::var("CARGO_MANIFEST_DIR").context("CARGO_MANIFEST_DIR not set")?);
+    let runtime_dir = manifest_dir.join("../runtime");
+
+    println!("cargo:rerun-if-changed={}/src", runtime_dir.display());
+    println!(
+        "cargo:rerun-if-changed={}/Cargo.toml",
+        runtime_dir.display()
+    );
+    println!("cargo:rerun-if-changed=prebuilt/runtime.wasm");
+    println!("cargo:rerun-if-env-changed={RUNTIME_AUDITABLE_ENV}");
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").context("OUT_DIR not set")?);
+
+    // Check for pre-built runtime (used when installing from crates.io)
+    let prebuilt = manifest_dir.join("prebuilt/runtime.wasm");
+    if prebuilt.exists() {
+        eprintln!("Using pre-built runtime at: {}", prebuilt.display());
+        return emit_runtime_wasm(&prebuilt, &out_dir);
+    }
+
+    // Check that runtime source is available (won't be when installed from crates.io
+    // without a pre-built runtime)
+    let runtime_src_dir = runtime_dir.join("src");
+    if !runtime_src_dir.exists() {
+        bail!(
+            "Runtime source not found at {} and no pre-built runtime at {}. \
+             If installing from crates.io, this is a packaging bug.",
+            runtime_src_dir.display(),
+            prebuilt.display(),
+        );
+    }
+
+    let runtime_wasm = build_runtime(&out_dir)?;
+    emit_runtime_wasm(&runtime_wasm, &out_dir)
+}
+
+fn emit_runtime_wasm(runtime_wasm: &Path, out_dir: &Path) -> Result<()> {
+    println!(
+        "cargo:rustc-env=RUNTIME_WASM_PATH={}",
+        runtime_wasm.display()
+    );
+
+    let output = format!(
+        r#"const RUNTIME_WASM: &[u8] = include_bytes!({:?});"#,
+        runtime_wasm,
+    );
+    fs::write(out_dir.join("output.rs"), output).context("Failed to write output.rs")?;
+
+    Ok(())
+}
+
+fn build_runtime(out_dir: &Path) -> Result<PathBuf> {
     let target = "wasm32-wasip2";
     let upcase = target.to_uppercase().replace('-', "_");
 
     // Get wasi-sdk - from env, cached, or download
-    let wasi_sdk = get_wasi_sdk(&out_dir)?;
+    let wasi_sdk = get_wasi_sdk(out_dir)?;
     eprintln!("Using wasi-sdk at: {}", wasi_sdk.display());
 
     let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
@@ -43,15 +94,18 @@ fn main() -> Result<()> {
         (_, _) => flags.to_string(),
     };
 
-    let clang = wasi_sdk.join("bin/clang");
+    let clang = executable(&wasi_sdk, "bin/clang");
     let mut cargo = Command::new("cargo");
+    if env::var_os(RUNTIME_AUDITABLE_ENV).is_some() {
+        cargo.arg("auditable");
+    }
     cargo
         .arg("build")
         .arg("--target")
         .arg(target)
         .arg("--package=componentize-qjs-runtime")
         .arg("--no-default-features")
-        .env("CARGO_TARGET_DIR", &out_dir)
+        .env("CARGO_TARGET_DIR", out_dir)
         .env(format!("CARGO_TARGET_{upcase}_RUSTFLAGS"), rustflags)
         .env(format!("CARGO_TARGET_{upcase}_LINKER"), &clang)
         .env(format!("CFLAGS_{}", target.replace('-', "_")), cflags)
@@ -81,7 +135,7 @@ fn main() -> Result<()> {
         .with_context(|| format!("Failed to copy {}", runtime_src.display()))?;
 
     if is_release {
-        let wasm_opt = get_wasm_opt(&out_dir)?;
+        let wasm_opt = get_wasm_opt(out_dir)?;
         let opt_level = if optimize_size { "-Oz" } else { "-O3" };
 
         let status = Command::new(&wasm_opt)
@@ -102,32 +156,21 @@ fn main() -> Result<()> {
         }
     }
 
-    println!(
-        "cargo:rustc-env=RUNTIME_WASM_PATH={}",
-        runtime_dst.display()
-    );
-
-    let output = format!(
-        r#"const RUNTIME_WASM: &[u8] = include_bytes!({:?});"#,
-        runtime_dst,
-    );
-    fs::write(out_dir.join("output.rs"), output).context("Failed to write output.rs")?;
-
-    Ok(())
+    Ok(runtime_dst)
 }
 
 fn get_wasi_sdk(out_dir: &Path) -> Result<PathBuf> {
     // Check environment first
     if let Ok(path) = env::var("WASI_SDK_PATH") {
         let p = PathBuf::from(path);
-        if p.join("bin/clang").exists() {
+        if executable(&p, "bin/clang").exists() {
             return Ok(p);
         }
     }
 
     // Check cached location
     let stable = out_dir.join("wasi-sdk");
-    if stable.join("bin/clang").exists() {
+    if executable(&stable, "bin/clang").exists() {
         return Ok(stable);
     }
 
@@ -150,7 +193,7 @@ fn find_wasi_sdk(target_dir: &Path) -> Option<PathBuf> {
     glob::glob(pattern.to_str()?)
         .ok()?
         .filter_map(Result::ok)
-        .find(|entry| entry.is_dir() && entry.join("bin/clang").exists())
+        .find(|entry| entry.is_dir() && executable(entry, "bin/clang").exists())
 }
 
 fn get_wasm_opt(out_dir: &Path) -> Result<PathBuf> {
@@ -164,7 +207,7 @@ fn get_wasm_opt(out_dir: &Path) -> Result<PathBuf> {
 
     // Check cached location
     let stable = out_dir.join("binaryen");
-    let wasm_opt = stable.join("bin/wasm-opt");
+    let wasm_opt = executable(&stable, "bin/wasm-opt");
     if wasm_opt.exists() {
         return Ok(wasm_opt);
     }
@@ -181,7 +224,7 @@ fn get_wasm_opt(out_dir: &Path) -> Result<PathBuf> {
     let extracted = find_binaryen(out_dir).context("Could not find extracted binaryen")?;
     fs::rename(&extracted, &stable).context("Failed to rename binaryen directory")?;
 
-    Ok(stable.join("bin/wasm-opt"))
+    Ok(executable(&stable, "bin/wasm-opt"))
 }
 
 fn find_binaryen(target_dir: &Path) -> Option<PathBuf> {
@@ -189,7 +232,15 @@ fn find_binaryen(target_dir: &Path) -> Option<PathBuf> {
     glob::glob(pattern.to_str()?)
         .ok()?
         .filter_map(Result::ok)
-        .find(|entry| entry.is_dir() && entry.join("bin/wasm-opt").exists())
+        .find(|entry| entry.is_dir() && executable(entry, "bin/wasm-opt").exists())
+}
+
+fn executable(root: &Path, relative: &str) -> PathBuf {
+    let mut path = root.join(relative);
+    if !env::consts::EXE_SUFFIX.is_empty() {
+        path.set_extension(&env::consts::EXE_SUFFIX[1..]);
+    }
+    path
 }
 
 fn system() -> Result<(&'static str, &'static str)> {
@@ -217,9 +268,12 @@ fn http_archive(url: &str, out_dir: &Path) -> Result<()> {
     response
         .into_body()
         .into_reader()
-        .take(500_000_000)
+        .take(MAX_ARCHIVE_BYTES + 1)
         .read_to_end(&mut bytes)
         .context("Failed to download archive")?;
+    if bytes.len() as u64 > MAX_ARCHIVE_BYTES {
+        bail!("Archive exceeds maximum download size of {MAX_ARCHIVE_BYTES} bytes");
+    }
 
     let decoder = GzDecoder::new(bytes.as_slice());
 

@@ -1,4 +1,4 @@
-use crate::{componentize, ComponentizeOpts};
+use componentize_qjs::{componentize, ComponentizeOpts};
 
 use anyhow::{Context, Result};
 use clap::Parser;

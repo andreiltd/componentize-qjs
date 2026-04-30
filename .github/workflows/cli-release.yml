@@ -1,0 +1,134 @@
+name: Publish CLI release assets
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: cli-release-${{ github.event.release.tag_name || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
+
+jobs:
+  build:
+    name: Build CLI - ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+            cross: true
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            archive: tar.gz
+            musl: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            archive: tar.gz
+            cross: true
+            musl: true
+          - target: x86_64-apple-darwin
+            os: macos-13
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-14
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || github.ref }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2,${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@v1.10.15
+
+      - name: Install auditable build tool
+        run: cargo binstall cargo-auditable --force
+
+      - name: Install cross-compilation tools
+        if: matrix.cross
+        uses: taiki-e/setup-cross-toolchain-action@v1
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Install musl tools
+        if: matrix.musl
+        run: sudo apt-get install -y musl-tools
+
+      - name: Build CLI
+        run: cargo build --release --bin componentize-qjs --target ${{ matrix.target }}
+        env:
+          COMPONENTIZE_QJS_RUNTIME_AUDITABLE: 1
+
+      - name: Package CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          checksum() {
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$1"
+            else
+              shasum -a 256 "$1"
+            fi
+          }
+
+          version="${RELEASE_TAG#v}"
+          pkg="componentize-qjs-v${version}-${{ matrix.target }}"
+          mkdir -p "dist/${pkg}"
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            cp "target/${{ matrix.target }}/release/componentize-qjs.exe" "dist/${pkg}/"
+          else
+            cp "target/${{ matrix.target }}/release/componentize-qjs" "dist/${pkg}/"
+          fi
+          cp README.md "dist/${pkg}/"
+          if [[ "${{ matrix.archive }}" == "zip" ]]; then
+            (cd dist && 7z a "${pkg}.zip" "${pkg}")
+            checksum "dist/${pkg}.zip" > "dist/${pkg}.zip.sha256"
+          else
+            tar -czf "dist/${pkg}.tar.gz" -C dist "${pkg}"
+            checksum "dist/${pkg}.tar.gz" > "dist/${pkg}.tar.gz.sha256"
+          fi
+          rm -rf "dist/${pkg}"
+
+      - name: Attest CLI archives
+        if: github.event_name == 'release'
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: dist/*
+
+      - name: Upload CLI archives to release
+        if: github.event_name == 'release'
+        shell: bash
+        run: gh release upload "${RELEASE_TAG}" dist/* --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}

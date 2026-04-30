@@ -1,0 +1,37 @@
+[workspace]
+# Release the core lib crate and CLI to crates.io.
+# Runtime is compiled to wasm32-wasip2 and embedded; napi is for npm only.
+
+[[package]]
+name = "componentize-qjs-runtime"
+release = false
+publish = false
+
+[[package]]
+name = "componentize-qjs-napi"
+release = false
+publish = false
+
+[[package]]
+name = "componentize-qjs"
+publish_allow_dirty = true
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "componentize-qjs-cli"
+changelog_include = ["componentize-qjs"]
+git_tag_name = "v{{ version }}"
+git_release_name = "v{{ version }}"
+publish_allow_dirty = true
+
+[changelog]
+commit_parsers = [
+    { message = "^feat", group = "Features" },
+    { message = "^fix", group = "Bug Fixes" },
+    { message = "^perf", group = "Performance" },
+    { message = "^refactor", group = "Refactoring" },
+    { message = "^doc", group = "Documentation" },
+    { message = "^ci", group = "CI", default_scope = "ci" },
+    { message = "^chore", group = "Miscellaneous" },
+]

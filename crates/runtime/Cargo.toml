@@ -1,9 +1,12 @@
 [package]
 name = "componentize-qjs-runtime"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 description = "QuickJS runtime for componentize-qjs"
-license = "Apache-2.0"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
 
 [lib]
 crate-type = ["cdylib"]
@@ -11,7 +14,7 @@ crate-type = ["cdylib"]
 [dependencies]
 rquickjs = { version = "0.11", default-features = false, features = ["bindgen", "disable-assertions", "std", "macro"] }
 wit-bindgen = "0.41"
-wit-dylib-ffi = { git = "https://github.com/bytecodealliance/wasm-tools", default-features = false, features = ["async-raw"] }
+wit-dylib-ffi = { version = "0.1.0", git = "https://github.com/bytecodealliance/wasm-tools", default-features = false, features = ["async-raw"] }
 heck = "0.5"
 num_enum = { version = "0.7", default-features = false }
 smallvec = "1"

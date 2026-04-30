@@ -1,9 +1,11 @@
 [package]
 name = "componentize-qjs-napi"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "Node.js bindings for componentize-qjs"
-license = "Apache-2.0"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 publish = false
 
 [lib]
@@ -11,12 +13,13 @@ crate-type = ["cdylib"]
 doctest = false
 
 [dependencies]
-componentize-qjs = { path = ".." }
-anyhow = "1.0"
-clap = { version = "4", features = ["derive"] }
+componentize-qjs.workspace = true
+componentize-qjs-cli.workspace = true
+anyhow.workspace = true
+clap.workspace = true
 napi = { version = "3", features = ["tokio_rt"] }
 napi-derive = "3"
-tokio = { version = "1", default-features = false, features = ["rt", "macros"] }
+tokio.workspace = true
 
 [build-dependencies]
 napi-build = "2"

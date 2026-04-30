@@ -1,60 +1,65 @@
 [workspace]
-members = ["crates/runtime", "napi"]
+members = ["crates/core", "crates/runtime", "napi"]
 default-members = [".", "napi"]
 resolver = "2"
 
-[package]
-name = "componentize-qjs"
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.94"
-description = "Convert JavaScript to WebAssembly components using QuickJS"
 license = "Apache-2.0"
+repository = "https://github.com/andreiltd/componentize-qjs"
+homepage = "https://github.com/andreiltd/componentize-qjs"
+
+[workspace.dependencies]
+componentize-qjs = { path = "crates/core", version = "0.1.0" }
+componentize-qjs-cli = { path = ".", version = "0.1.0" }
+anyhow = "1.0"
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", default-features = false, features = ["rt", "macros"] }
+wasmtime = { version = "42", features = ["component-model", "async"] }
+wasmtime-wasi = "42"
+wit-parser = "0.244"
+
+[package]
+name = "componentize-qjs-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "CLI for converting JavaScript to WebAssembly components using QuickJS"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
 
 [lib]
-name = "componentize_qjs"
+name = "componentize_qjs_cli"
 path = "src/lib.rs"
 
 [[bin]]
 name = "componentize-qjs"
 path = "src/main.rs"
+doc = false
 
 [dependencies]
-anyhow = "1.0"
-bytes = "1"
-clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", default-features = false, features = ["rt", "macros"] }
-wit-parser = "0.244"
-wit-component = { version = "0.244", features = ["dummy-module"] }
-wit-dylib = "0.244"
-wasi-preview1-component-adapter-provider = "41"
-wasmtime = { version = "42", features = ["component-model", "async"] }
-wasmtime-wasi = "42"
-wasmtime-wizer = { version = "42", features = ["component-model", "wasmtime"] }
-wac-graph = "0.9"
-indexmap = "2"
+componentize-qjs.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
 oxc_minifier = "0.115.0"
 oxc_allocator = "0.115.0"
 oxc_codegen = "0.115.0"
 oxc_parser = "0.115.0"
 oxc_span = "0.115.0"
 
-[build-dependencies]
-anyhow = "1.0"
-flate2 = "1.1"
-glob = "0.3"
-tar = "0.4"
-ureq = "3"
-
 [dev-dependencies]
 assert_cmd = "2.0"
 predicates = "3.1"
 quickcheck = "1"
 tempfile = "3.13"
-
-[features]
-default = []
-optimize-size = []
+wasmtime.workspace = true
+wasmtime-wasi.workspace = true
+wit-parser.workspace = true
 
 [profile.release]
 lto = true
