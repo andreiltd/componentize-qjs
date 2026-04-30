@@ -215,7 +215,7 @@ fn init_js(shim: &str, js_source: &str, disable_gc: bool) -> Result<(), String> 
     if disable_gc {
         state.with_ctx(|ctx| unsafe {
             let rt = rquickjs::qjs::JS_GetRuntime(ctx.as_raw().as_ptr());
-            rquickjs::qjs::JS_SetGCThreshold(rt, u32::MAX);
+            rquickjs::qjs::JS_SetGCThreshold(rt, usize::MAX as _);
         });
     }
 

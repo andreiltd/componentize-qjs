@@ -1,0 +1,5 @@
+package local:init;
+
+world init {
+  export init: func(shim: string, script: string, disable-gc: bool) -> result<_, string>;
+}

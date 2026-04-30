@@ -10,6 +10,15 @@ use wasmtime::component::Val;
 use common::{componentize_qjs, run_cli_build, ComponentInstance};
 
 #[test]
+fn test_cli_help() {
+    componentize_qjs()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Usage: componentize-qjs"));
+}
+
+#[test]
 fn test_cli_errors() {
     componentize_qjs()
         .arg("--wit")

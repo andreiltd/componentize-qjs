@@ -1,0 +1,134 @@
+name: Publish runtime Wasm
+
+on:
+  push:
+    tags:
+      - v*
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  IMAGE_NAME: ${{ github.repository }}
+  COMPONENT_NAME: componentize-qjs-runtime
+  COMPONENT_DESCRIPTION: QuickJS runtime for componentize-qjs
+  COMPONENT_SOURCE: https://github.com/${{ github.repository }}
+  COMPONENT_HOMEPAGE: https://github.com/${{ github.repository }}
+  COMPONENT_LICENSES: Apache-2.0
+  WASM_FILE: dist/componentize_qjs_runtime.wasm
+  SBOM_FILE: dist/componentize_qjs_runtime.wasm.cdx.json
+
+jobs:
+  publish:
+    name: Publish runtime Wasm
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      packages: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@v1.10.15
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ env.IMAGE_NAME }}/${{ env.COMPONENT_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+
+      - name: Login to GitHub Container Registry
+        if: github.event_name != 'workflow_dispatch'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install cosign
+        if: github.event_name != 'workflow_dispatch'
+        uses: sigstore/cosign-installer@v3.7.0
+
+      - name: Install publish tools
+        run: |
+          cargo binstall wkg --force
+          cargo binstall cargo-auditable --force
+          cargo binstall auditable2cdx --force
+
+      - name: Build auditable runtime
+        shell: bash
+        run: |
+          rm -rf crates/core/prebuilt dist target/runtime-publish
+          COMPONENTIZE_QJS_RUNTIME_AUDITABLE=1 cargo build --release -p componentize-qjs --target-dir target/runtime-publish
+          mkdir -p dist
+          mapfile -t runtimes < <(find target/runtime-publish -path '*/out/runtime.wasm' -type f | sort)
+          test "${#runtimes[@]}" -eq 1 || { printf 'ERROR: expected exactly one runtime.wasm, found %s\n' "${#runtimes[@]}"; printf '%s\n' "${runtimes[@]}"; exit 1; }
+          cp "${runtimes[0]}" "${WASM_FILE}"
+          sha256sum "${WASM_FILE}" > "${WASM_FILE}.sha256"
+          auditable2cdx "${WASM_FILE}" > "${SBOM_FILE}"
+          test -s "${SBOM_FILE}" || { echo "ERROR: runtime SBOM is empty"; exit 1; }
+          echo "Runtime ready at ${WASM_FILE} ($(wc -c < "${WASM_FILE}") bytes)"
+
+      - name: Upload runtime artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: componentize-qjs-runtime
+          path: |
+            ${{ env.WASM_FILE }}
+            ${{ env.WASM_FILE }}.sha256
+            ${{ env.SBOM_FILE }}
+          if-no-files-found: error
+
+      - name: Publish `:<version>` to GitHub Container Registry
+        if: github.event_name != 'workflow_dispatch'
+        id: publish_versioned
+        uses: bytecodealliance/wkg-github-action@v5
+        with:
+          file: ${{ env.WASM_FILE }}
+          oci-reference-without-tag: ghcr.io/${{ env.IMAGE_NAME }}/${{ env.COMPONENT_NAME }}
+          version: ${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
+          description: ${{ env.COMPONENT_DESCRIPTION }}
+          source: ${{ env.COMPONENT_SOURCE }}
+          homepage: ${{ env.COMPONENT_HOMEPAGE }}
+          licenses: ${{ env.COMPONENT_LICENSES }}
+
+      - name: Sign the versioned runtime
+        if: github.event_name != 'workflow_dispatch'
+        run: cosign sign --yes ghcr.io/${{ env.IMAGE_NAME }}/${{ env.COMPONENT_NAME }}@${{ steps.publish_versioned.outputs.digest }}
+
+      - name: Attest the versioned runtime SBOM
+        if: github.event_name != 'workflow_dispatch'
+        run: cosign attest --yes --type cyclonedx --predicate "${SBOM_FILE}" ghcr.io/${{ env.IMAGE_NAME }}/${{ env.COMPONENT_NAME }}@${{ steps.publish_versioned.outputs.digest }}
+
+      - name: Publish `:latest` to GitHub Container Registry
+        if: github.event_name != 'workflow_dispatch'
+        id: publish_latest
+        uses: bytecodealliance/wkg-github-action@v5
+        with:
+          file: ${{ env.WASM_FILE }}
+          oci-reference-without-tag: ghcr.io/${{ env.IMAGE_NAME }}/${{ env.COMPONENT_NAME }}
+          version: latest
+          description: ${{ env.COMPONENT_DESCRIPTION }}
+          source: ${{ env.COMPONENT_SOURCE }}
+          homepage: ${{ env.COMPONENT_HOMEPAGE }}
+          licenses: ${{ env.COMPONENT_LICENSES }}
+
+      - name: Sign the latest runtime
+        if: github.event_name != 'workflow_dispatch'
+        run: cosign sign --yes ghcr.io/${{ env.IMAGE_NAME }}/${{ env.COMPONENT_NAME }}@${{ steps.publish_latest.outputs.digest }}
+
+      - name: Attest the latest runtime SBOM
+        if: github.event_name != 'workflow_dispatch'
+        run: cosign attest --yes --type cyclonedx --predicate "${SBOM_FILE}" ghcr.io/${{ env.IMAGE_NAME }}/${{ env.COMPONENT_NAME }}@${{ steps.publish_latest.outputs.digest }}
