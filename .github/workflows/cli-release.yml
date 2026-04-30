@@ -4,6 +4,17 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag to build from
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      release_tag:
+        description: Release tag to build from
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -11,12 +22,12 @@ permissions:
   attestations: write
 
 concurrency:
-  group: cli-release-${{ github.event.release.tag_name || github.ref_name }}
+  group: cli-release-${{ inputs.release_tag || github.event.release.tag_name || github.ref_name }}
   cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
-  RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
+  RELEASE_TAG: ${{ inputs.release_tag || github.event.release.tag_name || github.ref_name }}
 
 jobs:
   build:
@@ -43,7 +54,7 @@ jobs:
             cross: true
             musl: true
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-15-intel
             archive: tar.gz
           - target: aarch64-apple-darwin
             os: macos-14
@@ -59,7 +70,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name || github.ref }}
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -121,13 +132,13 @@ jobs:
           rm -rf "dist/${pkg}"
 
       - name: Attest CLI archives
-        if: github.event_name == 'release'
+        if: github.event_name != 'workflow_dispatch'
         uses: actions/attest-build-provenance@v1
         with:
           subject-path: dist/*
 
       - name: Upload CLI archives to release
-        if: github.event_name == 'release'
+        if: github.event_name != 'workflow_dispatch'
         shell: bash
         run: gh release upload "${RELEASE_TAG}" dist/* --clobber
         env:

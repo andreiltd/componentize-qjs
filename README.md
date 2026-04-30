@@ -32,11 +32,25 @@ toolchain for PIC support in wasi-libc).
 
 ## Installation
 
+### Rust CLI (crates.io)
+
+```bash
+cargo install componentize-qjs-cli --locked
+```
+
+This installs the `componentize-qjs` command.
+
 ### Rust CLI (from source)
 
 ```bash
-cargo install --path .
+cargo install --path . --locked
 ```
+
+### Prebuilt CLI binaries
+
+Prebuilt CLI archives are attached to each
+[GitHub release](https://github.com/andreiltd/componentize-qjs/releases) for
+Linux, macOS, and Windows.
 
 ### npm package
 
@@ -75,8 +89,8 @@ componentize-qjs --wit hello.wit --js hello.js -o hello.wasm
 **4. Run it:**
 
 ```bash
-wasmtime run --invoke 'greet("World")' hello.wasm
-# Hello, World!
+wasmtime run --wasm component-model-async=y --invoke 'greet("World")' hello.wasm
+# "Hello, World!"
 ```
 
 ## CLI Reference
@@ -325,7 +339,6 @@ via `Symbol.dispose`. In environments that support `using`:
 ```
 
 Otherwise, call `.drop()` explicitly to release handles.
-```
 
 ## Node.js API
 

@@ -5,9 +5,21 @@ on:
     tags:
       - v*
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag to build from
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      release_tag:
+        description: Release tag to build from
+        required: true
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
+  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
   IMAGE_NAME: ${{ github.repository }}
   COMPONENT_NAME: componentize-qjs-runtime
   COMPONENT_DESCRIPTION: QuickJS runtime for componentize-qjs
@@ -29,6 +41,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -41,13 +55,13 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Docker meta
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ env.IMAGE_NAME }}/${{ env.COMPONENT_NAME }}
-          tags: |
-            type=semver,pattern={{version}}
+      - name: Compute runtime version
+        id: version
+        shell: bash
+        run: |
+          version="${RELEASE_TAG#v}"
+          test -n "$version" || { echo "ERROR: release tag is empty"; exit 1; }
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - name: Login to GitHub Container Registry
         if: github.event_name != 'workflow_dispatch'
@@ -55,7 +69,7 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ github.token }}
 
       - name: Install cosign
         if: github.event_name != 'workflow_dispatch'
@@ -98,7 +112,7 @@ jobs:
         with:
           file: ${{ env.WASM_FILE }}
           oci-reference-without-tag: ghcr.io/${{ env.IMAGE_NAME }}/${{ env.COMPONENT_NAME }}
-          version: ${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
+          version: ${{ steps.version.outputs.version }}
           description: ${{ env.COMPONENT_DESCRIPTION }}
           source: ${{ env.COMPONENT_SOURCE }}
           homepage: ${{ env.COMPONENT_HOMEPAGE }}
