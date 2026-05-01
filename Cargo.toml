@@ -4,7 +4,7 @@ default-members = [".", "napi"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.94"
 license = "Apache-2.0"
@@ -12,8 +12,8 @@ repository = "https://github.com/andreiltd/componentize-qjs"
 homepage = "https://github.com/andreiltd/componentize-qjs"
 
 [workspace.dependencies]
-componentize-qjs = { path = "crates/core", version = "0.1.0" }
-componentize-qjs-cli = { path = ".", version = "0.1.0" }
+componentize-qjs = { path = "crates/core", version = "0.1.1" }
+componentize-qjs-cli = { path = ".", version = "0.1.1" }
 anyhow = "1.0"
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", default-features = false, features = ["rt", "macros"] }
