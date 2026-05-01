@@ -40,20 +40,20 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ env.RELEASE_TAG }}
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           targets: wasm32-wasip2
 
       - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@v1.10.15
+        uses: cargo-bins/cargo-binstall@dc19f1e48450eefe5a29b8da6c6b00a87d730b37 # v1.18.1
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Compute runtime version
         id: version
@@ -65,7 +65,7 @@ jobs:
 
       - name: Login to GitHub Container Registry
         if: github.event_name != 'workflow_dispatch'
-        uses: docker/login-action@v3
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -73,7 +73,7 @@ jobs:
 
       - name: Install cosign
         if: github.event_name != 'workflow_dispatch'
-        uses: sigstore/cosign-installer@v3.7.0
+        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
 
       - name: Install publish tools
         run: |
@@ -96,7 +96,7 @@ jobs:
           echo "Runtime ready at ${WASM_FILE} ($(wc -c < "${WASM_FILE}") bytes)"
 
       - name: Upload runtime artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: componentize-qjs-runtime
           path: |
@@ -108,7 +108,7 @@ jobs:
       - name: Publish `:<version>` to GitHub Container Registry
         if: github.event_name != 'workflow_dispatch'
         id: publish_versioned
-        uses: bytecodealliance/wkg-github-action@v5
+        uses: bytecodealliance/wkg-github-action@10b3b04b9059ba46208cd7daf7d352af14bded0f # v5
         with:
           file: ${{ env.WASM_FILE }}
           oci-reference-without-tag: ghcr.io/${{ env.IMAGE_NAME }}/${{ env.COMPONENT_NAME }}
@@ -129,7 +129,7 @@ jobs:
       - name: Publish `:latest` to GitHub Container Registry
         if: github.event_name != 'workflow_dispatch'
         id: publish_latest
-        uses: bytecodealliance/wkg-github-action@v5
+        uses: bytecodealliance/wkg-github-action@10b3b04b9059ba46208cd7daf7d352af14bded0f # v5
         with:
           file: ${{ env.WASM_FILE }}
           oci-reference-without-tag: ghcr.io/${{ env.IMAGE_NAME }}/${{ env.COMPONENT_NAME }}
