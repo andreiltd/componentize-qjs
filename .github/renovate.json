@@ -1,0 +1,28 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests",
+    "helpers:githubDigestChangelogs",
+    ":semanticCommits",
+    "schedule:weekly"
+  ],
+  "dependencyDashboard": true,
+  "packageRules": [
+    {
+      "groupName": "github ci dependencies",
+      "groupSlug": "ci",
+      "matchDatasources": ["github-tags", "gitea-tags", "github-runners"]
+    },
+    {
+      "groupName": "rust dependencies",
+      "groupSlug": "rust",
+      "matchDatasources": ["crate"]
+    },
+    {
+      "groupName": "npm dependencies",
+      "groupSlug": "npm",
+      "matchDatasources": ["npm"]
+    }
+  ]
+}
