@@ -4,18 +4,18 @@ on:
   push:
     branches: [main]
 
-permissions:
-  pull-requests: write
-  contents: write
-
-concurrency:
-  group: release-plz-${{ github.ref }}
-  cancel-in-progress: false
+permissions: {}
 
 jobs:
-  release-plz:
-    name: Release-plz
+  release-plz-release:
+    name: Release-plz release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    outputs:
+      releases_created: ${{ steps.release_plz.outputs.releases_created }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -54,6 +54,7 @@ jobs:
           echo "Pre-built runtime.wasm ready ($(wc -c < crates/core/prebuilt/runtime.wasm) bytes)"
 
       - name: Run release-plz
+        id: release_plz
         uses: release-plz/action@v0.5
         with:
           command: release
@@ -61,3 +62,73 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Extract release tag
+        if: steps.release_plz.outputs.releases_created == 'true'
+        id: release
+        shell: bash
+        env:
+          RELEASES: ${{ steps.release_plz.outputs.releases }}
+        run: |
+          tag=$(jq -r 'map(select(.package_name == "componentize-qjs-cli"))[0].tag // map(select((.tag // "") | startswith("v")))[0].tag // empty' <<< "$RELEASES")
+          if [ -z "$tag" ]; then
+            echo "release-plz did not report a v* release tag; skipping CLI/runtime publish"
+            echo "$RELEASES"
+            exit 0
+          fi
+          echo "release_tag=${tag}" >> "$GITHUB_OUTPUT"
+
+  publish-cli:
+    name: Publish CLI release assets
+    needs: release-plz-release
+    if: needs.release-plz-release.outputs.releases_created == 'true' && needs.release-plz-release.outputs.release_tag != ''
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/cli-release.yml
+    with:
+      release_tag: ${{ needs.release-plz-release.outputs.release_tag }}
+
+  publish-runtime:
+    name: Publish runtime Wasm
+    needs: release-plz-release
+    if: needs.release-plz-release.outputs.releases_created == 'true' && needs.release-plz-release.outputs.release_tag != ''
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    uses: ./.github/workflows/runtime-publish.yml
+    with:
+      release_tag: ${{ needs.release-plz-release.outputs.release_tag }}
+
+  release-plz-pr:
+    name: Release-plz PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: release-plz-pr-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run release-plz
+        uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+          backend: github
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
