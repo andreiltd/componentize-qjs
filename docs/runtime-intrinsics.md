@@ -1,8 +1,9 @@
 # Runtime Intrinsics Reference
 
-This document describes the bridge identifiers that componentize-qjs installs
-in the JavaScript global scope to connect WIT with quickjs. These are internal
-implementation details and user code should prefer the public `wit.*` API where 
+This document describes the bridge identifiers and module-state conventions
+that componentize-qjs uses to connect WIT with quickjs. These are internal
+implementation details; user code should be written as an ES module and should
+prefer explicit `import`/`export` syntax plus the public `wit.*` API where
 possible.
 
 ## Naming Conventions
@@ -11,7 +12,6 @@ possible.
 |---|---|---|
 | Internal namespace | `__cqjs` prefix | `__cqjs.makeStream()` |
 | Hidden properties | `__cqjs_` prefix | `__cqjs_handle` |
-| Transient globals | `__cqjs_` prefix | `__cqjs_ctor_args` |
 | Public API | `wit.*` namespace | `wit.Stream`, `wit.Future` |
 | JS classes | PascalCase | `StreamReadable`, `FutureWritable` |
 | Prototype methods | camelCase | `read`, `cancelRead`, `writeAll` |
@@ -112,7 +112,9 @@ If only one future type exists in the WIT world, `type` may be omitted.
 
 Type constants are generated for each stream/future element type found in
 the WIT world. They are available as static properties on `wit.Stream` and
-`wit.Future`, and also via the `.types` map for runtime discovery.
+`wit.Future`, and also via the `.types` map for runtime discovery. The numeric
+value is an internal index into the runtime WIT stream/future table; user code
+should pass the generated constant rather than hard-coding the index.
 
 | Constant Pattern | Example | WIT Type |
 |---|---|---|
@@ -122,7 +124,20 @@ the WIT world. They are available as static properties on `wit.Stream` and
 | Results | `RESULT_STRING_U32` | `result<string, u32>` |
 | Tuples | `TUPLE_U32_STRING` | `tuple<u32, string>` |
 | Lists | `LIST_U8` | `list<u8>` |
+| Nested streams/futures | `STREAM_U8`, `FUTURE_STRING` | `stream<u8>`, `future<string>` |
 | Unit | `UNIT` | (no payload) |
+
+Constants for anonymous composite payloads are named recursively. For example,
+`stream<result<string, u32>>` produces `wit.Stream.RESULT_STRING_U32`, and
+`stream<stream<u8>>` produces `wit.Stream.STREAM_U8`. True self-recursive WIT
+type cycles are rejected by `wit-parser`, so the runtime only needs to support
+finite nested type graphs here.
+
+If two payload types would produce the same local constant name, the generated
+shim qualifies the duplicate names with their owner. For example, if
+`test:dupe/left.point` and `test:dupe/right.point` are both used as stream
+payloads, the constants are emitted as `TEST_DUPE_LEFT_POINT` and
+`TEST_DUPE_RIGHT_POINT` rather than overwriting `POINT`.
 
 ---
 
@@ -193,31 +208,24 @@ resources. Stores the canonical component-model resource handle (`u32`).
 - Removed: When an owned resource is lifted back to JS via `push_own`, the
   property is removed since the handle is no longer valid.
 
----
-
-## Transient Globals
-
-### `__cqjs_ctor_args` / `__cqjs_ctor_fn`
-
-Temporary globals used during resource constructor calls. These are set on
-`globalThis` immediately before evaluating `new __cqjs_ctor_fn(...__cqjs_ctor_args)`
-and removed immediately after. They are never visible to user code during
-normal execution.
-
----
-
 ## WIT Import/Export Naming
 
 ### Import Interfaces
 
-WIT import interfaces are registered as objects on `globalThis` using their
-full WIT path:
+User code imports WIT interfaces as ES modules using their full WIT path:
 
 ```js
-// Both are set (with and without version):
-globalThis["wasi:random/random@0.2.6"]  // full path
-globalThis["wasi:random/random"]        // versionless alias
+import random from "wasi:random/random@0.2.6";
+
+export function getRandomU64() {
+  return random.getRandomU64();
+}
 ```
+
+The runtime resolves both the versioned specifier and the versionless alias
+internally, for example `wasi:random/random@0.2.6` and `wasi:random/random`.
+The resolved module is a native runtime module whose exports call the host WIT
+imports directly.
 
 ### Import Functions
 
@@ -239,9 +247,9 @@ WIT function names are converted from kebab-case to lowerCamelCase:
 
 ### Export Functions
 
-Async export functions are looked up from user code using the same
-lowerCamelCase convention, optionally nested under a lowerCamelCase
-interface name.
+Export functions are looked up from the evaluated user ES module namespace
+using the same lowerCamelCase convention, optionally nested under the
+lowerCamelCase exported interface name.
 
 ### Result / Variant Protocol
 

@@ -4,10 +4,12 @@ mod buffer;
 mod call;
 mod futures;
 mod interpreter;
+mod module;
 mod resources;
 mod streams;
 mod task;
 mod trivia;
+mod wit_imports;
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
@@ -69,6 +71,12 @@ pub(crate) trait CtxExt<'js> {
 
     /// Retrieve the function/interface name cache.
     fn fns(&self) -> UserDataGuard<'_, FnNameCache>;
+
+    /// Retrieve the evaluated user ES module state.
+    fn user_module(&self) -> UserDataGuard<'_, module::UserModule>;
+
+    /// Retrieve transient WIT import module declaration state.
+    fn wit_import_declarations(&self) -> UserDataGuard<'_, module::WitImportDeclarations>;
 }
 
 impl<'js> CtxExt<'js> for rquickjs::Ctx<'js> {
@@ -87,17 +95,27 @@ impl<'js> CtxExt<'js> for rquickjs::Ctx<'js> {
     fn fns(&self) -> UserDataGuard<'_, FnNameCache> {
         self.userdata().expect("FnNameCache not stored")
     }
+
+    fn user_module(&self) -> UserDataGuard<'_, module::UserModule> {
+        self.userdata().expect("UserModule not stored")
+    }
+
+    fn wit_import_declarations(&self) -> UserDataGuard<'_, module::WitImportDeclarations> {
+        self.userdata().expect("WitImportDeclarations not stored")
+    }
 }
 
 impl JsState {
     fn get_or_init() -> &'static Self {
         JS_STATE.0.get_or_init(|| {
             let runtime = Runtime::new().expect("Failed to create quikcjs runtime");
+            module::install_loader(&runtime);
             let context = Context::full(&runtime).expect("Failed to create quickjs context");
 
             context.with(|ctx| {
                 ctx.store_userdata(FnNameCache::default())
-                    .expect("Failed to store userdata");
+                    .expect("Failed to store function name cache");
+                module::init_state(&ctx);
             });
 
             JsState {
@@ -220,12 +238,8 @@ fn init_js(shim: &str, js_source: &str, disable_gc: bool) -> Result<(), String> 
     }
 
     state.with_ctx(|ctx| {
-        // Evaluate the generated shim first
-        ctx.eval::<(), _>(shim)
-            .map_err(|e| format!("Failed to evaluate shim: {:?}", e))?;
-        // Then evaluate the user's script
-        ctx.eval::<(), _>(js_source)
-            .map_err(|e| format!("Failed to evaluate JavaScript: {:?}", e))
+        module::evaluate_shim(ctx, shim)?;
+        module::evaluate_user(ctx, js_source)
     })?;
 
     unsafe {

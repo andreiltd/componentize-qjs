@@ -9,6 +9,7 @@ use crate::{QjsCallContext, abi, with_ctx};
 use crate::{futures, streams};
 
 use heck::ToUpperCamelCase;
+use rquickjs::function::Constructor;
 use rquickjs::{JsLifetime, Value};
 use wit_dylib_ffi::{ExportFunction, Interpreter, Resource, Wit};
 
@@ -45,42 +46,26 @@ impl Interpreter for QjsInterpreter {
             // Resource constructor: call `new ClassName(args...)` and store in table
             let class_name = resource_name.to_upper_camel_case();
             with_ctx(|ctx| {
-                let globals = ctx.globals();
-                let ctor: rquickjs::Function = if let Some(iface) = func.interface() {
-                    let iface_obj: rquickjs::Object = globals
+                let exports = ctx
+                    .user_module()
+                    .exports(ctx)
+                    .expect("user module exports not found");
+                let ctor: Constructor = if let Some(iface) = func.interface() {
+                    let iface_obj: rquickjs::Object = exports
                         .get(iface_lookup(ctx, iface))
                         .unwrap_or_else(|e| panic!("interface '{}' not found: {:?}", iface, e));
                     iface_obj
                         .get(class_name.as_str())
                         .unwrap_or_else(|e| panic!("class '{}' not found: {:?}", class_name, e))
                 } else {
-                    globals
+                    exports
                         .get(class_name.as_str())
                         .unwrap_or_else(|e| panic!("class '{}' not found: {:?}", class_name, e))
                 };
-                // Collect args from the stack
-                let arg_vals: Vec<Value> = cx
-                    .stack
-                    .drain(..)
-                    .map(|p| p.restore(ctx).expect("failed to restore arg"))
-                    .collect();
-
-                // Build a JS expression to call `new` with spread args
-                // Store args in a temp global, eval `new Ctor(...args)`, clean up
-                let arr = rquickjs::Array::new(ctx.clone()).unwrap();
-                for (i, v) in arg_vals.into_iter().enumerate() {
-                    arr.set(i, v).unwrap();
-                }
-                let globals = ctx.globals();
-                globals.set("__cqjs_ctor_args", arr).unwrap();
-                globals.set("__cqjs_ctor_fn", ctor).unwrap();
-
-                let instance: Value = ctx
-                    .eval("new __cqjs_ctor_fn(...__cqjs_ctor_args)")
+                let args = cx.stack_into_args(ctx);
+                let instance: Value = ctor
+                    .construct_args(args)
                     .unwrap_or_else(|e| panic!("Failed to construct '{}': {:?}", class_name, e));
-
-                let _ = globals.remove("__cqjs_ctor_args");
-                let _ = globals.remove("__cqjs_ctor_fn");
 
                 cx.push_value(ctx, instance);
             });
@@ -123,16 +108,19 @@ impl Interpreter for QjsInterpreter {
             with_ctx(|ctx| {
                 let method_name = fn_lookup(ctx, method_name);
                 let class_name = resource.to_upper_camel_case();
-                let globals = ctx.globals();
+                let exports = ctx
+                    .user_module()
+                    .exports(ctx)
+                    .expect("user module exports not found");
                 let class_obj: rquickjs::Object = if let Some(iface) = func.interface() {
-                    let iface_obj: rquickjs::Object = globals
+                    let iface_obj: rquickjs::Object = exports
                         .get(iface_lookup(ctx, iface))
                         .unwrap_or_else(|e| panic!("interface '{}' not found: {:?}", iface, e));
                     iface_obj
                         .get(class_name.as_str())
                         .unwrap_or_else(|e| panic!("class '{}' not found: {:?}", class_name, e))
                 } else {
-                    globals
+                    exports
                         .get(class_name.as_str())
                         .unwrap_or_else(|e| panic!("class '{}' not found: {:?}", class_name, e))
                 };
@@ -150,17 +138,20 @@ impl Interpreter for QjsInterpreter {
         } else {
             // Regular function
             with_ctx(|ctx| {
-                let globals = ctx.globals();
+                let exports = ctx
+                    .user_module()
+                    .exports(ctx)
+                    .expect("user module exports not found");
                 let func_name = fn_lookup(ctx, name);
                 let js_func: rquickjs::Function = if let Some(iface) = func.interface() {
-                    let iface_obj: rquickjs::Object = globals
+                    let iface_obj: rquickjs::Object = exports
                         .get(iface_lookup(ctx, iface))
                         .unwrap_or_else(|e| panic!("interface '{}' not found: {:?}", iface, e));
                     iface_obj
                         .get(func_name)
                         .unwrap_or_else(|e| panic!("function '{}' not found: {:?}", func_name, e))
                 } else {
-                    globals.get(func_name).unwrap_or_else(|e| {
+                    exports.get(func_name).unwrap_or_else(|e| {
                         panic!("Failed to get function '{}': {:?}", func_name, e)
                     })
                 };
@@ -193,7 +184,7 @@ impl Interpreter for QjsInterpreter {
                 .expect("__cqjs.asyncExports not found");
 
             let wrapper_obj = if let Some(interface) = func.interface() {
-                async_exports.get(fn_lookup(ctx, interface)).unwrap()
+                async_exports.get(iface_lookup(ctx, interface)).unwrap()
             } else {
                 async_exports
             };
