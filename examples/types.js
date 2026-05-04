@@ -1,36 +1,36 @@
 // Numeric types (using camelCase - runtime converts from WIT kebab-case)
-function addU32(a, b) {
+export function addU32(a, b) {
     return (a + b) >>> 0; // unsigned 32-bit
 }
 
-function addS32(a, b) {
+export function addS32(a, b) {
     return (a + b) | 0; // signed 32-bit
 }
 
-function addF64(a, b) {
+export function addF64(a, b) {
     return a + b;
 }
 
-function negate(b) {
+export function negate(b) {
     return !b;
 }
 
-function toUpper(c) {
+export function toUpper(c) {
     return c.toUpperCase();
 }
 
 // Record
-function addPoints(a, b) {
+export function addPoints(a, b) {
     return { x: a.x + b.x, y: a.y + b.y };
 }
 
 // List
-function sumList(nums) {
+export function sumList(nums) {
     return nums.reduce((acc, n) => acc + n, 0);
 }
 
 // Option - null/undefined = none, value = some
-function maybeDouble(n) {
+export function maybeDouble(n) {
     if (n === null || n === undefined) {
         return null;
     }
@@ -38,7 +38,7 @@ function maybeDouble(n) {
 }
 
 // Result - {tag: "ok", val: ...} or {tag: "err", val: ...}
-function safeDivide(a, b) {
+export function safeDivide(a, b) {
     if (b === 0) {
         return { tag: "err", val: "division by zero" };
     }
@@ -46,18 +46,18 @@ function safeDivide(a, b) {
 }
 
 // Enum - represented as discriminant number
-function colorName(c) {
+export function colorName(c) {
     const names = ["red", "green", "blue"];
     return names[c] || "unknown";
 }
 
 // Flags - represented as bitmask
-function checkRead(p) {
+export function checkRead(p) {
     return (p & 1) !== 0; // read is bit 0
 }
 
 // Variant - {tag: discriminant, val: payload}
-function shapeArea(s) {
+export function shapeArea(s) {
     if (s.tag === 0) {
         // circle - val is radius
         const r = s.val;

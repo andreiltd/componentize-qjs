@@ -18,7 +18,7 @@ anyhow = "1.0"
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", default-features = false, features = ["rt", "macros"] }
 wasmtime = { version = "42", features = ["component-model", "async"] }
-wasmtime-wasi = "42"
+wasmtime-wasi = { version = "42", features = ["p3"] }
 wit-parser = "0.244"
 
 [package]

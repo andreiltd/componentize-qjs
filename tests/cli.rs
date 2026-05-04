@@ -47,7 +47,7 @@ fn test_cli_errors() {
 fn test_cli_output() {
     let (output, _dir) = run_cli_build(
         "package test:hello;\nworld hello { export add: func(a: u32, b: u32) -> u32; }",
-        "function add(a, b) { return a + b; }",
+        "export function add(a, b) { return a + b; }",
         &[],
     );
 
@@ -62,7 +62,7 @@ fn test_cli_output() {
 fn test_cli_stub_wasi() {
     let (output, _dir) = run_cli_build(
         "package test:hello;\nworld hello { export add: func(a: u32, b: u32) -> u32; }",
-        "function add(a, b) { return a + b; }",
+        "export function add(a, b) { return a + b; }",
         &["--stub-wasi"],
     );
 
@@ -89,7 +89,7 @@ fn test_cli_minify() {
         /**
          * Foo bar baz.
          */
-        function add(a, b) {
+        export function add(a, b) {
             const result = a + b;
             return result;
         }
@@ -97,7 +97,7 @@ fn test_cli_minify() {
         /**
          * Foo bar baz.
          */
-        function greet(name) {
+        export function greet(name) {
             const greeting = "Hello, " + name + "!";
             return greeting;
         }

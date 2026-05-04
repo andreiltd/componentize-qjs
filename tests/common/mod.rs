@@ -8,6 +8,7 @@ use std::sync::OnceLock;
 use tempfile::TempDir;
 use wasmtime::component::{Component, Instance, Linker, ResourceTable, Val};
 use wasmtime::{Config, Engine, Store};
+use wasmtime_wasi::p2::pipe::{MemoryInputPipe, MemoryOutputPipe};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 use componentize_qjs::ComponentizeOpts;
@@ -62,6 +63,7 @@ pub struct TestCase {
     script: Option<String>,
     stub_wasi: bool,
     env_vars: Vec<(String, String)>,
+    stdin: Option<String>,
     expectations: Vec<Expectation>,
 }
 
@@ -74,6 +76,7 @@ impl TestCase {
             script: None,
             stub_wasi: false,
             env_vars: Vec::new(),
+            stdin: None,
             expectations: Vec::new(),
         }
     }
@@ -112,6 +115,12 @@ impl TestCase {
         self
     }
 
+    /// Set bytes visible through WASI stdin.
+    pub fn stdin(mut self, input: &str) -> Self {
+        self.stdin = Some(input.to_string());
+        self
+    }
+
     /// Register an expected function call: name, params, and expected return value.
     pub fn expect_call(mut self, name: &str, params: Vec<Val>, expected: Val) -> Self {
         self.expectations.push(Expectation {
@@ -147,7 +156,7 @@ impl TestCase {
             .build()?;
 
         let wasm = rt.block_on(componentize_qjs::componentize(&opts))?;
-        ComponentInstance::from_wasm(wasm, self.env_vars, self.expectations)
+        ComponentInstance::from_wasm_with_stdin(wasm, self.env_vars, self.stdin, self.expectations)
     }
 
     /// Build the component and return an async-capable instance.
@@ -172,13 +181,14 @@ impl TestCase {
 
         let wasm = componentize_qjs::componentize(&opts).await?;
 
-        AsyncComponentInstance::from_wasm(wasm, self.env_vars).await
+        AsyncComponentInstance::from_wasm_with_stdin(wasm, self.env_vars, self.stdin).await
     }
 }
 
 pub struct ComponentInstance {
     store: Store<WasiCtxState>,
     inner: Instance,
+    stdout: MemoryOutputPipe,
     expectations: Vec<Expectation>,
 }
 
@@ -187,6 +197,15 @@ impl ComponentInstance {
     pub fn from_wasm(
         wasm: Vec<u8>,
         env_vars: Vec<(String, String)>,
+        expectations: Vec<Expectation>,
+    ) -> anyhow::Result<Self> {
+        Self::from_wasm_with_stdin(wasm, env_vars, None, expectations)
+    }
+
+    pub fn from_wasm_with_stdin(
+        wasm: Vec<u8>,
+        env_vars: Vec<(String, String)>,
+        stdin: Option<String>,
         expectations: Vec<Expectation>,
     ) -> anyhow::Result<Self> {
         let engine = engine();
@@ -199,6 +218,10 @@ impl ComponentInstance {
                 wasi_builder.env(k, v);
             }
         }
+        let stdout = MemoryOutputPipe::new(10000);
+        wasi_builder
+            .stdin(MemoryInputPipe::new(stdin.unwrap_or_default()))
+            .stdout(stdout.clone());
         let wasi = wasi_builder.build();
         let table = ResourceTable::new();
         let mut store = Store::new(engine, WasiCtxState { wasi, table });
@@ -211,6 +234,7 @@ impl ComponentInstance {
         Ok(ComponentInstance {
             store,
             inner: instance,
+            stdout,
             expectations,
         })
     }
@@ -247,6 +271,15 @@ impl ComponentInstance {
             );
         }
     }
+
+    pub fn stdout_bytes(&self) -> Vec<u8> {
+        self.stdout.contents().to_vec()
+    }
+
+    /// Get the wasmtime instance and store for typed/interface function access.
+    pub fn parts(&mut self) -> (&Instance, &mut Store<WasiCtxState>) {
+        (&self.inner, &mut self.store)
+    }
 }
 
 pub fn componentize_qjs() -> assert_cmd::Command {
@@ -256,10 +289,19 @@ pub fn componentize_qjs() -> assert_cmd::Command {
 pub struct AsyncComponentInstance {
     store: Store<WasiCtxState>,
     inner: Instance,
+    stdout: MemoryOutputPipe,
 }
 
 impl AsyncComponentInstance {
     pub async fn from_wasm(wasm: Vec<u8>, env_vars: Vec<(String, String)>) -> anyhow::Result<Self> {
+        Self::from_wasm_with_stdin(wasm, env_vars, None).await
+    }
+
+    pub async fn from_wasm_with_stdin(
+        wasm: Vec<u8>,
+        env_vars: Vec<(String, String)>,
+        stdin: Option<String>,
+    ) -> anyhow::Result<Self> {
         let engine = async_engine();
         let component = Component::new(engine, &wasm)?;
 
@@ -270,18 +312,24 @@ impl AsyncComponentInstance {
                 wasi_builder.env(k, v);
             }
         }
+        let stdout = MemoryOutputPipe::new(10000);
+        wasi_builder
+            .stdin(MemoryInputPipe::new(stdin.unwrap_or_default()))
+            .stdout(stdout.clone());
         let wasi = wasi_builder.build();
         let table = ResourceTable::new();
         let mut store = Store::new(engine, WasiCtxState { wasi, table });
 
         let mut linker = Linker::new(engine);
         wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+        wasmtime_wasi::p3::add_to_linker(&mut linker)?;
 
         let instance = linker.instantiate_async(&mut store, &component).await?;
 
         Ok(AsyncComponentInstance {
             store,
             inner: instance,
+            stdout,
         })
     }
 
@@ -317,6 +365,10 @@ impl AsyncComponentInstance {
     /// Get the wasmtime instance and store for typed function access.
     pub fn parts(&mut self) -> (&Instance, &mut Store<WasiCtxState>) {
         (&self.inner, &mut self.store)
+    }
+
+    pub fn stdout_bytes(&self) -> Vec<u8> {
+        self.stdout.contents().to_vec()
     }
 }
 

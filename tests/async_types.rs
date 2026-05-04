@@ -22,7 +22,7 @@ async fn test_async_echo_u32() {
             }
             "#,
         )
-        .script("async function echoU32(x) { return x; }")
+        .script("export async function echoU32(x) { return x; }")
         .build_async()
         .await
         .unwrap();
@@ -45,7 +45,7 @@ async fn test_async_echo_string() {
             }
             "#,
         )
-        .script(r#"async function echoString(s) { return s; }"#)
+        .script(r#"export async function echoString(s) { return s; }"#)
         .build_async()
         .await
         .unwrap();
@@ -68,7 +68,7 @@ async fn test_async_echo_bool() {
             }
             "#,
         )
-        .script("async function echoBool(b) { return b; }")
+        .script("export async function echoBool(b) { return b; }")
         .build_async()
         .await
         .unwrap();
@@ -91,7 +91,7 @@ async fn test_async_void_function() {
             }
             "#,
         )
-        .script("async function doNothing() { }")
+        .script("export async function doNothing() { }")
         .build_async()
         .await
         .unwrap();
@@ -113,7 +113,7 @@ async fn test_async_with_await() {
         )
         .script(
             r#"
-            async function delayedEcho(x) {
+            export async function delayedEcho(x) {
                 // Simulate async work with a resolved promise chain
                 await Promise.resolve();
                 return x + 1;
@@ -148,7 +148,7 @@ async fn test_async_echo_record() {
         )
         .script(
             r#"
-            async function echoPoint(p) {
+            export async function echoPoint(p) {
                 return { x: p.x * 2, y: p.y * 2 };
             }
             "#,
@@ -188,7 +188,7 @@ async fn test_async_echo_option() {
         )
         .script(
             r#"
-            async function echoOption(x) {
+            export async function echoOption(x) {
                 return x;
             }
             "#,
@@ -225,7 +225,7 @@ async fn test_async_echo_result() {
         )
         .script(
             r#"
-            async function safeDivide(a, b) {
+            export async function safeDivide(a, b) {
                 if (b === 0) {
                     return { tag: "err", val: "division by zero" };
                 }
@@ -268,7 +268,7 @@ async fn test_async_echo_list() {
         )
         .script(
             r#"
-            async function doubleList(xs) {
+            export async function doubleList(xs) {
                 return xs.map(x => x * 2);
             }
             "#,
@@ -299,7 +299,7 @@ async fn test_stream_create_and_return_u8() {
         )
         .script(
             r#"
-            async function makeStream() {
+            export async function makeStream() {
                 const { readable, writable } = wit.Stream();
                 writable.drop();
                 return readable;
@@ -327,7 +327,7 @@ async fn test_stream_create_and_return_u32() {
         )
         .script(
             r#"
-            async function makeStream() {
+            export async function makeStream() {
                 const { readable, writable } = wit.Stream();
                 writable.drop();
                 return readable;
@@ -355,7 +355,7 @@ async fn test_stream_create_and_return_string() {
         )
         .script(
             r#"
-            async function makeStream() {
+            export async function makeStream() {
                 const { readable, writable } = wit.Stream();
                 writable.drop();
                 return readable;
@@ -384,7 +384,7 @@ async fn test_stream_object_return_shape() {
         )
         .script(
             r#"
-            async function checkShape() {
+            export async function checkShape() {
                 const pair = wit.Stream();
                 // Verify it's an object with named properties
                 if (pair.readable === undefined) throw new Error("missing readable");
@@ -418,7 +418,7 @@ async fn test_stream_enum_factory() {
         )
         .script(
             r#"
-            async function checkEnum() {
+            export async function checkEnum() {
                 const { readable, writable } = wit.Stream(wit.Stream.U8);
                 if (readable === undefined) throw new Error("missing readable");
                 if (writable === undefined) throw new Error("missing writable");
@@ -449,7 +449,7 @@ async fn test_future_enum_factory() {
         )
         .script(
             r#"
-            async function checkEnum() {
+            export async function checkEnum() {
                 const { readable, writable } = wit.Future(wit.Future.STRING);
                 if (readable === undefined) throw new Error("missing readable");
                 if (writable === undefined) throw new Error("missing writable");
@@ -480,7 +480,7 @@ async fn test_stream_record_type_constant() {
         )
         .script(
             r#"
-            async function makeStream() {
+            export async function makeStream() {
                 // Use the named record type constant
                 const { readable, writable } = wit.Stream(wit.Stream.POINT);
                 writable.drop();
@@ -497,6 +497,356 @@ async fn test_stream_record_type_constant() {
 }
 
 #[tokio::test]
+async fn test_multiple_stream_type_constants_are_ordered() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:multi-stream;
+            world multi-stream {
+                export make-bytes: async func() -> stream<u8>;
+                export make-ints: async func() -> stream<u32>;
+                export stream-indexes: func() -> tuple<u32, u32>;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            export async function makeBytes() {
+                const { readable, writable } = wit.Stream(wit.Stream.U8);
+                writable.drop();
+                return readable;
+            }
+
+            export async function makeInts() {
+                const { readable, writable } = wit.Stream(wit.Stream.U32);
+                writable.drop();
+                return readable;
+            }
+
+            export function streamIndexes() {
+                return [wit.Stream.U8, wit.Stream.U32];
+            }
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    let result = instance.call1_async("stream-indexes", &[]).await.unwrap();
+    assert_eq!(result, Val::Tuple(vec![Val::U32(0), Val::U32(1)]));
+}
+
+#[tokio::test]
+async fn test_mixed_export_stream_type_constants_match_metadata_order() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:mixed-stream;
+
+            interface streams {
+                make-bytes: async func() -> stream<u8>;
+            }
+
+            world mixed-stream {
+                export streams;
+                export make-ints: async func() -> stream<u32>;
+                export stream-indexes: func() -> tuple<u32, u32>;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            export const streams = {
+                async makeBytes() {
+                    const { readable, writable } = wit.Stream(wit.Stream.U8);
+                    writable.drop();
+                    return readable;
+                },
+            };
+
+            export async function makeInts() {
+                const { readable, writable } = wit.Stream(wit.Stream.U32);
+                writable.drop();
+                return readable;
+            }
+
+            export function streamIndexes() {
+                return [wit.Stream.U32, wit.Stream.U8];
+            }
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    let result = instance.call1_async("stream-indexes", &[]).await.unwrap();
+    assert_eq!(result, Val::Tuple(vec![Val::U32(0), Val::U32(1)]));
+}
+
+#[tokio::test]
+async fn test_nested_stream_type_constant() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:nested-stream;
+            world nested-stream {
+                export make-nested: async func() -> stream<stream<u8>>;
+                export stream-indexes: func() -> tuple<u32, u32>;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            export async function makeNested() {
+                const { readable, writable } = wit.Stream(wit.Stream.STREAM_U8);
+                writable.drop();
+                return readable;
+            }
+
+            export function streamIndexes() {
+                return [wit.Stream.U8, wit.Stream.STREAM_U8];
+            }
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    let result = instance.call1_async("stream-indexes", &[]).await.unwrap();
+    assert_eq!(result, Val::Tuple(vec![Val::U32(0), Val::U32(1)]));
+}
+
+#[tokio::test]
+async fn test_duplicate_named_stream_payloads_get_qualified_constants() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:dupe;
+
+            interface left {
+                record point { x: u32 }
+                make-left: async func() -> stream<point>;
+            }
+
+            interface right {
+                record point { y: u32 }
+                make-right: async func() -> stream<point>;
+            }
+
+            world duplicate-stream-names {
+                export left;
+                export right;
+                export stream-indexes: func() -> tuple<u32, u32>;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            export const left = {
+                async makeLeft() {
+                    const { readable, writable } = wit.Stream(wit.Stream.TEST_DUPE_LEFT_POINT);
+                    writable.drop();
+                    return readable;
+                },
+            };
+
+            export const right = {
+                async makeRight() {
+                    const { readable, writable } = wit.Stream(wit.Stream.TEST_DUPE_RIGHT_POINT);
+                    writable.drop();
+                    return readable;
+                },
+            };
+
+            export function streamIndexes() {
+                return [wit.Stream.TEST_DUPE_LEFT_POINT, wit.Stream.TEST_DUPE_RIGHT_POINT];
+            }
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    let result = instance.call1_async("stream-indexes", &[]).await.unwrap();
+    assert_eq!(result, Val::Tuple(vec![Val::U32(0), Val::U32(1)]));
+}
+
+#[tokio::test]
+async fn test_multiple_future_type_constants_are_ordered() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:multi-future;
+            world multi-future {
+                export make-string: async func() -> future<string>;
+                export make-int: async func() -> future<u32>;
+                export future-indexes: func() -> tuple<u32, u32>;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            export async function makeString() {
+                const { readable, writable } = wit.Future(wit.Future.STRING);
+                writable.drop();
+                return readable;
+            }
+
+            export async function makeInt() {
+                const { readable, writable } = wit.Future(wit.Future.U32);
+                writable.drop();
+                return readable;
+            }
+
+            export function futureIndexes() {
+                return [wit.Future.STRING, wit.Future.U32];
+            }
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    let result = instance.call1_async("future-indexes", &[]).await.unwrap();
+    assert_eq!(result, Val::Tuple(vec![Val::U32(0), Val::U32(1)]));
+}
+
+#[tokio::test]
+async fn test_mixed_export_future_type_constants_match_metadata_order() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:mixed-future;
+
+            interface futures {
+                make-string: async func() -> future<string>;
+            }
+
+            world mixed-future {
+                export futures;
+                export make-int: async func() -> future<u32>;
+                export future-indexes: func() -> tuple<u32, u32>;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            export const futures = {
+                async makeString() {
+                    const { readable, writable } = wit.Future(wit.Future.STRING);
+                    writable.drop();
+                    return readable;
+                },
+            };
+
+            export async function makeInt() {
+                const { readable, writable } = wit.Future(wit.Future.U32);
+                writable.drop();
+                return readable;
+            }
+
+            export function futureIndexes() {
+                return [wit.Future.U32, wit.Future.STRING];
+            }
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    let result = instance.call1_async("future-indexes", &[]).await.unwrap();
+    assert_eq!(result, Val::Tuple(vec![Val::U32(0), Val::U32(1)]));
+}
+
+#[tokio::test]
+async fn test_nested_future_type_constant() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:nested-future;
+            world nested-future {
+                export make-nested: async func() -> future<future<string>>;
+                export future-indexes: func() -> tuple<u32, u32>;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            export async function makeNested() {
+                const { readable, writable } = wit.Future(wit.Future.FUTURE_STRING);
+                writable.drop();
+                return readable;
+            }
+
+            export function futureIndexes() {
+                return [wit.Future.STRING, wit.Future.FUTURE_STRING];
+            }
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    let result = instance.call1_async("future-indexes", &[]).await.unwrap();
+    assert_eq!(result, Val::Tuple(vec![Val::U32(0), Val::U32(1)]));
+}
+
+#[tokio::test]
+async fn test_duplicate_named_future_payloads_get_qualified_constants() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:dupe-future;
+
+            interface left {
+                record point { x: u32 }
+                make-left: async func() -> future<point>;
+            }
+
+            interface right {
+                record point { y: u32 }
+                make-right: async func() -> future<point>;
+            }
+
+            world duplicate-future-names {
+                export left;
+                export right;
+                export future-indexes: func() -> tuple<u32, u32>;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            export const left = {
+                async makeLeft() {
+                    const { readable, writable } = wit.Future(wit.Future.TEST_DUPE_FUTURE_LEFT_POINT);
+                    writable.drop();
+                    return readable;
+                },
+            };
+
+            export const right = {
+                async makeRight() {
+                    const { readable, writable } = wit.Future(wit.Future.TEST_DUPE_FUTURE_RIGHT_POINT);
+                    writable.drop();
+                    return readable;
+                },
+            };
+
+            export function futureIndexes() {
+                return [wit.Future.TEST_DUPE_FUTURE_LEFT_POINT, wit.Future.TEST_DUPE_FUTURE_RIGHT_POINT];
+            }
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    let result = instance.call1_async("future-indexes", &[]).await.unwrap();
+    assert_eq!(result, Val::Tuple(vec![Val::U32(0), Val::U32(1)]));
+}
+
+#[tokio::test]
 async fn test_stream_result_type_constant() {
     let mut instance = TestCase::new()
         .wit(
@@ -509,7 +859,7 @@ async fn test_stream_result_type_constant() {
         )
         .script(
             r#"
-            async function makeStream() {
+            export async function makeStream() {
                 const { readable, writable } = wit.Stream(wit.Stream.RESULT_STRING_U32);
                 writable.drop();
                 return readable;
@@ -537,7 +887,7 @@ async fn test_stream_option_type_constant() {
         )
         .script(
             r#"
-            async function makeStream() {
+            export async function makeStream() {
                 const { readable, writable } = wit.Stream(wit.Stream.OPTION_U32);
                 writable.drop();
                 return readable;
@@ -565,7 +915,7 @@ async fn test_stream_tuple_type_constant() {
         )
         .script(
             r#"
-            async function makeStream() {
+            export async function makeStream() {
                 const { readable, writable } = wit.Stream(wit.Stream.TUPLE_U32_STRING);
                 writable.drop();
                 return readable;
@@ -593,7 +943,7 @@ async fn test_future_result_type_constant() {
         )
         .script(
             r#"
-            async function makeFuture() {
+            export async function makeFuture() {
                 const { readable, writable } = wit.Future(wit.Future.RESULT_STRING_STRING);
                 writable.write({ tag: "ok", val: "hello" });
                 return readable;
@@ -622,7 +972,7 @@ async fn test_stream_build_with_input_output() {
         )
         .script(
             r#"
-            async function echoBytes(input) {
+            export async function echoBytes(input) {
                 const { readable, writable } = wit.Stream();
                 (async () => {
                     const data = await input.read(1024);
@@ -651,7 +1001,7 @@ async fn test_future_create_and_return_u32() {
         )
         .script(
             r#"
-            async function makeFuture() {
+            export async function makeFuture() {
                 const { readable, writable } = wit.Future();
                 // Fire-and-forget write: completes when host reads the future
                 writable.write(42);
@@ -680,7 +1030,7 @@ async fn test_future_create_and_return_string() {
         )
         .script(
             r#"
-            async function makeFuture() {
+            export async function makeFuture() {
                 const { readable, writable } = wit.Future();
                 writable.write("hello from future");
                 return readable;
@@ -708,7 +1058,7 @@ async fn test_future_object_return_shape() {
         )
         .script(
             r#"
-            async function checkShape() {
+            export async function checkShape() {
                 const pair = wit.Future();
                 if (pair.readable === undefined) throw new Error("missing readable");
                 if (pair.writable === undefined) throw new Error("missing writable");
@@ -741,7 +1091,7 @@ async fn test_future_build_with_input_output() {
         )
         .script(
             r#"
-            async function echoFuture(input) {
+            export async function echoFuture(input) {
                 const { readable, writable } = wit.Future();
                 (async () => {
                     const val = await input.read();
@@ -769,7 +1119,7 @@ async fn test_async_multiple_awaits() {
         )
         .script(
             r#"
-            async function chain(x) {
+            export async function chain(x) {
                 let result = x;
                 // Multiple promise resolutions to test the callback loop
                 result = await Promise.resolve(result + 1);
@@ -803,7 +1153,7 @@ async fn test_async_error_in_promise() {
         )
         .script(
             r#"
-            async function mightFail(fail) {
+            export async function mightFail(fail) {
                 if (fail) {
                     throw new Error("intentional failure");
                 }
@@ -842,7 +1192,7 @@ async fn test_async_result_no_error_payload() {
         )
         .script(
             r#"
-            async function validate(x) {
+            export async function validate(x) {
                 if (x > 100) {
                     return { tag: "err" };
                 }
@@ -885,7 +1235,7 @@ async fn test_async_variant_mixed_payloads() {
         )
         .script(
             r#"
-            async function process(kind) {
+            export async function process(kind) {
                 if (kind === 0) return { tag: 0 };
                 if (kind === 1) return { tag: 1, val: "hello" };
                 return { tag: 2, val: 42 };
@@ -984,7 +1334,7 @@ async fn test_host_stream_to_guest() {
         )
         .script(
             r#"
-            async function countBytes(input) {
+            export async function countBytes(input) {
                 let total = 0;
                 const data = await input.read(1024);
                 total += data.length;

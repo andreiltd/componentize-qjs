@@ -4,60 +4,28 @@ use std::collections::HashMap;
 use heck::{ToLowerCamelCase, ToUpperCamelCase};
 use rquickjs::function::{self, Rest};
 use rquickjs::{Ctx, Function, Persistent, Value};
-use wit_dylib_ffi::{Enum, Flags, ImportFunction, Variant, Wit};
+use wit_dylib_ffi::Wit;
 
 use crate::CtxExt;
 use crate::futures::{make_future, register_future_classes};
 use crate::streams::{make_stream, register_stream_classes};
 use crate::task::Pending;
+use crate::trivia::iface_lookup;
+use crate::wit_imports::{WitInterface, root_bindings};
 use crate::{QjsCallContext, coerce_fn};
 
 /// Register all wit bindings on the js global scope.
 pub(crate) fn register(ctx: &rquickjs::Ctx<'_>, wit_def: Wit) -> rquickjs::Result<()> {
     register_stream_classes(ctx)?;
     register_future_classes(ctx)?;
-    register_imports(ctx, wit_def)?;
+    register_root_imports(ctx, wit_def)?;
     register_cqjs_namespace(ctx, wit_def)?;
     Ok(())
 }
 
-/// Groups wit imports belonging to one interface or the root scope.
-#[derive(Default)]
-struct WitInterface {
-    funcs: Vec<ImportFunction>,
-    flags: Vec<Flags>,
-    enums: Vec<Enum>,
-    variants: Vec<Variant>,
-}
-
-/// Partition all wit imports by interface name.
-fn partition_imports(wit: Wit) -> HashMap<Option<&'static str>, WitInterface> {
-    let mut ret: HashMap<_, WitInterface> = HashMap::new();
-
-    for func in wit.iter_import_funcs() {
-        ret.entry(func.interface()).or_default().funcs.push(func);
-    }
-    for flags in wit.iter_flags() {
-        ret.entry(flags.interface()).or_default().flags.push(flags);
-    }
-    for enum_ty in wit.iter_enums() {
-        ret.entry(enum_ty.interface())
-            .or_default()
-            .enums
-            .push(enum_ty);
-    }
-    for variant in wit.iter_variants() {
-        ret.entry(variant.interface())
-            .or_default()
-            .variants
-            .push(variant);
-    }
-    ret
-}
-
 /// Create a js object containing all functions, flags, enums, and variants
 /// for a single wit interface.
-fn interface_to_js<'js>(
+pub(crate) fn interface_to_js<'js>(
     ctx: &rquickjs::Ctx<'js>,
     iface: &WitInterface,
 ) -> rquickjs::Result<rquickjs::Object<'js>> {
@@ -107,26 +75,16 @@ fn interface_to_js<'js>(
     Ok(obj)
 }
 
-fn register_imports(ctx: &rquickjs::Ctx<'_>, wit_def: Wit) -> rquickjs::Result<()> {
+fn register_root_imports(ctx: &rquickjs::Ctx<'_>, wit_def: Wit) -> rquickjs::Result<()> {
     let globals = ctx.globals();
+    let obj = interface_to_js(ctx, &root_bindings(wit_def))?;
 
-    for (name, iface) in partition_imports(wit_def).iter() {
-        let obj = interface_to_js(ctx, iface)?;
-        match name {
-            Some(name) => {
-                let name_no_version = name.split('@').next().unwrap_or(name);
-                globals.set(name_no_version, obj.clone())?;
-                globals.set(*name, obj)?;
-            }
-            None => {
-                for key in obj.keys::<String>() {
-                    let key = key?;
-                    let val: Value = obj.get(&key)?;
-                    globals.set(key, val)?;
-                }
-            }
-        }
+    for key in obj.keys::<String>() {
+        let key = key?;
+        let val: Value = obj.get(&key)?;
+        globals.set(key, val)?;
     }
+
     Ok(())
 }
 
@@ -194,7 +152,9 @@ fn build_async_exports<'js>(
 
     for (func_index, func) in wit_def.iter_export_funcs().enumerate() {
         let func_name = func.name().to_lower_camel_case();
-        let iface_name = func.interface().map(|s| s.to_lower_camel_case());
+        let iface_name = func
+            .interface()
+            .map(|interface| iface_lookup(ctx, interface).to_string());
 
         let fn_name = func_name.clone();
         let iface = iface_name.clone();
@@ -202,13 +162,13 @@ fn build_async_exports<'js>(
         let wrapper = Function::new(
             ctx.clone(),
             coerce_fn(move |ctx: Ctx<'_>, args: Rest<Value<'_>>| {
-                let globals = ctx.globals();
+                let exports = ctx.user_module().exports(&ctx)?;
 
                 let user_fn: Function = if let Some(ref iface) = iface {
-                    let iface_obj: rquickjs::Object = globals.get(iface.as_str())?;
+                    let iface_obj: rquickjs::Object = exports.get(iface.as_str())?;
                     iface_obj.get(fn_name.as_str())?
                 } else {
-                    globals.get(fn_name.as_str())?
+                    exports.get(fn_name.as_str())?
                 };
 
                 let mut js_args = function::Args::new(ctx.clone(), args.0.len());
