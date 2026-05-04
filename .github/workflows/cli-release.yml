@@ -81,14 +81,14 @@ jobs:
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@dc19f1e48450eefe5a29b8da6c6b00a87d730b37 # v1.18.1
+        uses: cargo-bins/cargo-binstall@4852a15cf01e4f33958ce547326406fe78f27c38 # v1.19.0
 
       - name: Install auditable build tool
         run: cargo binstall cargo-auditable --force
 
       - name: Install cross-compilation tools
         if: matrix.cross
-        uses: taiki-e/setup-cross-toolchain-action@d62f33b587e73b0004731caebc7d2d46b18a7567 # v1.39.2
+        uses: taiki-e/setup-cross-toolchain-action@129361238c06ff2cc1c4ca5c5d2217af441ffdf6 # v1.40.1
         with:
           target: ${{ matrix.target }}
 
