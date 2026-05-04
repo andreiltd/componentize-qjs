@@ -1,4 +1,4 @@
 // Greet function exported to the component
-function greet(name) {
+export function greet(name) {
     return `Hello, ${name}!`;
 }

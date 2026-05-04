@@ -1,0 +1,8 @@
+package example:wasi-stdio;
+
+world wasi-stdio {
+    import wasi:cli/stdin@0.3.0-rc-2026-01-06;
+    import wasi:cli/stdout@0.3.0-rc-2026-01-06;
+
+    export wasi:cli/run@0.3.0-rc-2026-01-06;
+}

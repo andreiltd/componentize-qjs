@@ -19,3 +19,17 @@ world wasi-environment {
 
     export get-env-vars: func() -> list<tuple<string, string>>;
 }
+
+world wasi-stdio {
+    import wasi:cli/stdin@0.2.6;
+    import wasi:cli/stdout@0.2.6;
+    import wasi:io/streams@0.2.6;
+
+    export echo-stdin-to-stdout: func() -> result;
+}
+
+world wasi-import-types {
+    import wasi:filesystem/types@0.2.6;
+
+    export check-import-types: func() -> bool;
+}

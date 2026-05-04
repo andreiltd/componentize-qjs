@@ -112,6 +112,7 @@ async fn wizer_init(component: &[u8], shim: &str, js: &str, disable_gc: bool) ->
 
     let mut linker = Linker::new(&engine);
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    wasmtime_wasi::p3::add_to_linker(&mut linker)?;
     let instance = linker.instantiate_async(&mut store, &comp).await?;
 
     let init = Init::new(&mut store, &instance)?;

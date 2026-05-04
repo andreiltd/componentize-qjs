@@ -74,8 +74,11 @@ world hello {
 
 **2. Implement it in JavaScript** (`hello.js`):
 
+JavaScript sources are ES modules. Export WIT functions and interfaces directly
+from the module.
+
 ```js
-function greet(name) {
+export function greet(name) {
     return `Hello, ${name}!`;
 }
 ```
@@ -122,7 +125,8 @@ cargo build --release --features optimize-size
 
 ## Using Imports
 
-WIT imports are available on `globalThis` keyed by their fully-qualified name:
+WIT imports are available as ES module imports using their fully-qualified WIT
+interface name:
 
 ```wit
 // imports.wit
@@ -141,8 +145,9 @@ world imports {
 
 ```js
 // imports.js
-function doubleAdd(a, b) {
-    const math = globalThis["local:test/math"];
+import math from "local:test/math";
+
+export function doubleAdd(a, b) {
     const sum = math.add(a, b);
     return math.multiply(sum, 2);
 }
@@ -191,7 +196,7 @@ world greeter {
 ```
 
 ```js
-async function greet(name) {
+export async function greet(name) {
     // You can use await here
     await Promise.resolve();
     return `Hello, ${name}!`;
@@ -359,7 +364,7 @@ import { componentize } from "componentize-qjs";
 
 const { component } = await componentize({
     witPath: "hello.wit",
-    jsSource: "function greet(name) { return `Hello, ${name}!`; }",
+    jsSource: "export function greet(name) { return `Hello, ${name}!`; }",
 });
 // component is a Buffer containing the WebAssembly component bytes
 ```

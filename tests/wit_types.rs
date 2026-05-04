@@ -19,8 +19,8 @@ fn test_hello_world() {
         )
         .script(
             r#"
-            function greet() { return "Hello, World!"; }
-            function add(a, b) { return a + b; }
+            export function greet() { return "Hello, World!"; }
+            export function add(a, b) { return a + b; }
         "#,
         )
         .expect_call("greet", vec![], Val::String("Hello, World!".into()))
@@ -28,6 +28,45 @@ fn test_hello_world() {
         .build()
         .unwrap()
         .run();
+}
+
+#[test]
+fn test_export_only_interface_is_not_importable() {
+    let result = TestCase::new()
+        .wit(
+            r#"
+            package test:exports;
+
+            interface exported {
+                enum color { red, blue }
+                ping: func() -> bool;
+            }
+
+            world exports-only {
+                export exported;
+            }
+        "#,
+        )
+        .script(
+            r#"
+            import { Color } from "test:exports/exported";
+
+            export const exported = {
+                ping() {
+                    return Color.Red === 0;
+                },
+            };
+        "#,
+        )
+        .build();
+
+    let Err(err) = result else {
+        panic!("export-only WIT interface should not resolve as an import module");
+    };
+    assert!(
+        format!("{err:#}").contains("Failed to declare JavaScript module"),
+        "unexpected error: {err:#}"
+    );
 }
 
 #[test]
@@ -46,10 +85,10 @@ fn test_numeric_types() {
         )
         .script(
             r#"
-            function addU32(a, b) { return a + b; }
-            function addS32(a, b) { return a + b; }
-            function addF64(a, b) { return a + b; }
-            function negate(b) { return !b; }
+            export function addU32(a, b) { return a + b; }
+            export function addS32(a, b) { return a + b; }
+            export function addF64(a, b) { return a + b; }
+            export function negate(b) { return !b; }
         "#,
         )
         .expect_call("add-u32", vec![Val::U32(100), Val::U32(200)], Val::U32(300))
@@ -84,7 +123,7 @@ fn test_record_type() {
             }
         "#,
         )
-        .script("function addPoints(a, b) { return { x: a.x + b.x, y: a.y + b.y }; }")
+        .script("export function addPoints(a, b) { return { x: a.x + b.x, y: a.y + b.y }; }")
         .expect_call(
             "add-points",
             vec![point(1.0, 2.0), point(3.0, 4.0)],
@@ -106,7 +145,7 @@ fn test_list_type() {
             }
         "#,
         )
-        .script("function sumList(nums) { return nums.reduce((a, b) => a + b, 0); }")
+        .script("export function sumList(nums) { return nums.reduce((a, b) => a + b, 0); }")
         .expect_call(
             "sum-list",
             vec![Val::List(vec![
@@ -136,7 +175,7 @@ fn test_option_type() {
         )
         .script(
             r#"
-            function maybeDouble(n) {
+            export function maybeDouble(n) {
                 if (n === null || n === undefined) { return null; }
                 return n * 2;
             }
@@ -166,7 +205,7 @@ fn test_result_type() {
         )
         .script(
             r#"
-            function safeDiv(a, b) {
+            export function safeDiv(a, b) {
                 if (b === 0) { return { tag: "err", val: "division by zero" }; }
                 return { tag: "ok", val: Math.floor(a / b) };
             }
@@ -201,8 +240,8 @@ fn test_stub_wasi() {
         )
         .script(
             r#"
-            function greet(name) { return "Hello, " + name + "!"; }
-            function add(a, b) { return a + b; }
+            export function greet(name) { return "Hello, " + name + "!"; }
+            export function add(a, b) { return a + b; }
         "#,
         )
         .stub_wasi()
@@ -235,12 +274,12 @@ fn test_all_integer_types() {
         )
         .script(
             r#"
-            function addU8(a, b) { return a + b; }
-            function addS8(a, b) { return a + b; }
-            function addU16(a, b) { return a + b; }
-            function addS16(a, b) { return a + b; }
-            function addU64(a, b) { return a + b; }
-            function addS64(a, b) { return a + b; }
+            export function addU8(a, b) { return a + b; }
+            export function addS8(a, b) { return a + b; }
+            export function addU16(a, b) { return a + b; }
+            export function addS16(a, b) { return a + b; }
+            export function addU64(a, b) { return a + b; }
+            export function addS64(a, b) { return a + b; }
         "#,
         )
         .expect_call("add-u8", vec![Val::U8(200), Val::U8(55)], Val::U8(255))
@@ -282,7 +321,7 @@ fn test_float_types() {
             }
         "#,
         )
-        .script("function addF32(a, b) { return a + b; }\nfunction addF64(a, b) { return a + b; }")
+        .script("export function addF32(a, b) { return a + b; }\nexport function addF64(a, b) { return a + b; }")
         .expect_call(
             "add-f32",
             vec![Val::Float32(1.5), Val::Float32(2.5)],
@@ -313,9 +352,9 @@ fn test_string_operations() {
         )
         .script(
             r#"
-            function takeString(s) { return s.length; }
-            function returnString() { return "hello from js"; }
-            function concatStrings(a, b) { return a + b; }
+            export function takeString(s) { return s.length; }
+            export function returnString() { return "hello from js"; }
+            export function concatStrings(a, b) { return a + b; }
         "#,
         )
         .expect_call(
@@ -348,8 +387,8 @@ fn test_char_type() {
         )
         .script(
             r#"
-            function takeChar(c) { return c.codePointAt(0); }
-            function returnChar() { return "A"; }
+            export function takeChar(c) { return c.codePointAt(0); }
+            export function returnChar() { return "A"; }
         "#,
         )
         .expect_call("take-char", vec![Val::Char('A')], Val::U32(65))
@@ -375,13 +414,13 @@ fn test_enum_type() {
         )
         .script(
             r#"
-            function identifyColor(c) {
+            export function identifyColor(c) {
                 if (c === 0) return "is red";
                 if (c === 1) return "is green";
                 if (c === 2) return "is blue";
                 return "unknown";
             }
-            function favoriteColor() { return 1; }
+            export function favoriteColor() { return 1; }
         "#,
         )
         .expect_call(
@@ -416,12 +455,12 @@ fn test_variant_type() {
         )
         .script(
             r#"
-            function describeShape(s) {
+            export function describeShape(s) {
                 if (s.tag === 0) return "circle with radius " + s.val;
                 if (s.tag === 1) return "no shape";
                 return "unknown";
             }
-            function makeCircle(r) { return { tag: 0, val: r }; }
+            export function makeCircle(r) { return { tag: 0, val: r }; }
         "#,
         )
         .expect_call(
@@ -462,7 +501,7 @@ fn test_flag_type() {
         "#,
         )
         .script(
-            "function checkRead(p) { return (p & 1) !== 0; }\nfunction readWrite() { return 3; }",
+            "export function checkRead(p) { return (p & 1) !== 0; }\nexport function readWrite() { return 3; }",
         )
         .expect_call(
             "check-read",
@@ -495,7 +534,7 @@ fn test_tuple_return() {
             }
         "#,
         )
-        .script("function swap(a, b) { return [b, a]; }")
+        .script("export function swap(a, b) { return [b, a]; }")
         .expect_call(
             "swap",
             vec![Val::U32(1), Val::U32(2)],
@@ -518,7 +557,7 @@ fn test_many_arguments() {
             }
         "#)
         .script(r#"
-            function sumTen(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10) {
+            export function sumTen(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10) {
                 return a1 + a2 + a3 + a4 + a5 + a6 + a7 + a8 + a9 + a10;
             }
         "#)
@@ -542,9 +581,9 @@ fn test_no_arg_functions() {
         )
         .script(
             r#"
-            function getAnswer() { return 42; }
-            function getMessage() { return "hello"; }
-            function getFlag() { return true; }
+            export function getAnswer() { return 42; }
+            export function getMessage() { return "hello"; }
+            export function getFlag() { return true; }
         "#,
         )
         .expect_call("get-answer", vec![], Val::U32(42))
@@ -580,7 +619,7 @@ fn test_nested_lists() {
         "#,
         )
         .script(
-            "function flatten(nested) { return nested.reduce((acc, arr) => acc.concat(arr), []); }",
+            "export function flatten(nested) { return nested.reduce((acc, arr) => acc.concat(arr), []); }",
         )
         .expect_call("flatten", vec![nested], expected)
         .build()
@@ -611,8 +650,8 @@ fn test_complex_record() {
             }
         "#)
         .script(r#"
-            function greetPerson(p) { return "Hello " + p.name + ", age " + p.age + ", active: " + p.active; }
-            function makePerson(name, age) { return { name: name, age: age, active: true }; }
+            export function greetPerson(p) { return "Hello " + p.name + ", age " + p.age + ", active: " + p.active; }
+            export function makePerson(name, age) { return { name: name, age: age, active: true }; }
         "#)
         .expect_call("greet-person", vec![alice], Val::String("Hello Alice, age 30, active: true".into()))
         .expect_call("make-person", vec![Val::String("Bob".into()), Val::U32(25)], bob)
@@ -634,8 +673,8 @@ fn test_list_of_strings() {
         )
         .script(
             r#"
-            function joinStrings(parts, sep) { return parts.join(sep); }
-            function countStrings(parts) { return parts.length; }
+            export function joinStrings(parts, sep) { return parts.join(sep); }
+            export function countStrings(parts) { return parts.length; }
         "#,
         )
         .expect_call(
@@ -696,7 +735,7 @@ fn test_naming_conventions() {
             }
         "#,
         )
-        .script(r#"function getFullName(r) { return r.firstName + " " + r.lastName; }"#)
+        .script(r#"export function getFullName(r) { return r.firstName + " " + r.lastName; }"#)
         .expect_call("get-full-name", vec![rec], Val::String("John Doe".into()))
         .build()
         .unwrap()
@@ -714,7 +753,7 @@ fn test_repeated_calls() {
             }
         "#,
         )
-        .script(r#"function hello() { return "hello"; }"#)
+        .script(r#"export function hello() { return "hello"; }"#)
         .build()
         .unwrap();
 
@@ -745,7 +784,7 @@ fn test_deeply_nested_lists() {
         )
         .script(
             r#"
-            function deepFlatten(nested) {
+            export function deepFlatten(nested) {
                 let result = [];
                 for (const mid of nested) {
                     for (const inner of mid) {
@@ -789,7 +828,7 @@ fn test_nested_option() {
         )
         .script(
             r#"
-            function unwrapNested(val) {
+            export function unwrapNested(val) {
                 if (val === null || val === undefined) return 0;
                 if (val === null || val === undefined) return 0;
                 return val;
@@ -836,10 +875,10 @@ fn test_list_of_records() {
         )
         .script(
             r#"
-            function totalScore(players) {
+            export function totalScore(players) {
                 return players.reduce((sum, p) => sum + p.score, 0);
             }
-            function topPlayer(players) {
+            export function topPlayer(players) {
                 let best = players[0];
                 for (const p of players) {
                     if (p.score > best.score) best = p;
@@ -870,7 +909,7 @@ fn test_list_of_variants() {
         )
         .script(
             r#"
-            function countTexts(items) {
+            export function countTexts(items) {
                 let count = 0;
                 for (const item of items) {
                     if (item.tag === 0) count++;
@@ -914,14 +953,14 @@ fn test_record_with_nested_fields() {
         )
         .script(
             r#"
-            function describeConfig(c) {
+            export function describeConfig(c) {
                 let s = c.name + ": tags=" + c.tags.join(",");
                 if (c.maxRetries !== null && c.maxRetries !== undefined) {
                     s += " retries=" + c.maxRetries;
                 }
                 return s;
             }
-            function makeConfig(name) {
+            export function makeConfig(name) {
                 return { name: name, tags: ["default"], maxRetries: 3 };
             }
         "#,
@@ -974,7 +1013,7 @@ fn test_option_of_result() {
         )
         .script(
             r#"
-            function process(val) {
+            export function process(val) {
                 if (val === null || val === undefined) return "none";
                 if (val.tag === "ok") return "ok:" + val.val;
                 return "err:" + val.val;
@@ -1019,7 +1058,7 @@ fn test_result_of_option() {
         )
         .script(
             r#"
-            function maybeLookup(key) {
+            export function maybeLookup(key) {
                 if (key === "found") return { tag: "ok", val: 42 };
                 if (key === "missing") return { tag: "ok", val: null };
                 return { tag: "err", val: "invalid key" };
@@ -1063,8 +1102,8 @@ fn test_empty_list() {
         )
         .script(
             r#"
-            function count(items) { return items.length; }
-            function makeEmpty() { return []; }
+            export function count(items) { return items.length; }
+            export function makeEmpty() { return []; }
         "#,
         )
         .stub_wasi()
@@ -1088,7 +1127,7 @@ fn test_import_export_chain() {
         )
         .script(
             r#"
-            function process(val) {
+            export function process(val) {
                 return val + 11;
             }
         "#,
@@ -1115,7 +1154,7 @@ fn test_multiple_return_results() {
         )
         .script(
             r#"
-            function tryOp(succeed) {
+            export function tryOp(succeed) {
                 if (succeed) return { tag: "ok", val: 42 };
                 return { tag: "err" };
             }
@@ -1150,14 +1189,14 @@ fn test_variant_with_multiple_payload_types() {
         )
         .script(
             r#"
-            function stringify(v) {
+            export function stringify(v) {
                 if (v.tag === 0) return "int:" + v.val;
                 if (v.tag === 1) return "text:" + v.val;
                 if (v.tag === 2) return "flag:" + v.val;
                 return "nothing";
             }
-            function makeText(s) { return { tag: 1, val: s }; }
-            function makeNothing() { return { tag: 3 }; }
+            export function makeText(s) { return { tag: 1, val: s }; }
+            export function makeNothing() { return { tag: 3 }; }
         "#,
         )
         .stub_wasi()
@@ -1207,8 +1246,8 @@ fn test_tuple_of_mixed_types() {
         )
         .script(
             r#"
-            function first(t) { return t[0]; }
-            function makeTuple() { return ["hello", 42, true]; }
+            export function first(t) { return t[0]; }
+            export function makeTuple() { return ["hello", 42, true]; }
         "#,
         )
         .stub_wasi()
@@ -1252,7 +1291,7 @@ fn test_many_params_echo() {
         )
         .script(
             r#"
-            function echoMany(a, b, c, d, e, f, g, h) {
+            export function echoMany(a, b, c, d, e, f, g, h) {
                 return [a, b, c, d, e, f.toFixed(1), g.toFixed(1), h].join(",");
             }
         "#,
@@ -1290,7 +1329,7 @@ fn test_list_of_options() {
         )
         .script(
             r#"
-            function countSome(items) {
+            export function countSome(items) {
                 let count = 0;
                 for (const item of items) {
                     if (item !== null && item !== undefined) count++;
@@ -1329,7 +1368,7 @@ fn test_list_of_tuples() {
         )
         .script(
             r#"
-            function sumPairs(pairs) {
+            export function sumPairs(pairs) {
                 return pairs.reduce((sum, p) => sum + p[0] + p[1], 0);
             }
         "#,
@@ -1363,7 +1402,7 @@ fn test_result_of_result() {
         )
         .script(
             r#"
-            function tryNested(level) {
+            export function tryNested(level) {
                 if (level === 0) return { tag: "err", val: "outer error" };
                 if (level === 1) return { tag: "ok", val: { tag: "err", val: "inner error" } };
                 return { tag: "ok", val: { tag: "ok", val: level * 10 } };
@@ -1409,8 +1448,8 @@ fn test_signed_integer_boundaries() {
         )
         .script(
             r#"
-            function echoS32(v) { return v; }
-            function echoS64(v) { return v; }
+            export function echoS32(v) { return v; }
+            export function echoS64(v) { return v; }
         "#,
         )
         .stub_wasi()
@@ -1439,9 +1478,9 @@ fn test_echo_lists_of_each_primitive() {
         )
         .script(
             r#"
-            function echoBools(v) { return v; }
-            function echoU8s(v) { return v; }
-            function echoF64s(v) { return v; }
+            export function echoBools(v) { return v; }
+            export function echoU8s(v) { return v; }
+            export function echoF64s(v) { return v; }
         "#,
         )
         .stub_wasi()
@@ -1509,7 +1548,7 @@ fn test_exported_resource() {
                 increment() { this.value++; }
                 getValue() { return this.value; }
             }
-            globalThis.counterApi = { Counter };
+            export const counterApi = { Counter };
         "#,
         world_name: None,
         stub_wasi: true,
@@ -1622,7 +1661,7 @@ fn test_static_resource_method_in_interface() {
                 getName() { return this.name; }
                 static createDefault() { return new Widget("default"); }
             }
-            globalThis.widgetApi = { Widget };
+            export const widgetApi = { Widget };
         "#,
         world_name: None,
         stub_wasi: true,
@@ -1697,7 +1736,7 @@ async fn test_async_export_rejection_propagates() {
         )
         .script(
             r#"
-            async function willThrow() {
+            export async function willThrow() {
                 throw new Error("this should not be silently swallowed");
             }
             "#,
@@ -1733,7 +1772,7 @@ fn test_root_level_flags() {
         )
         .script(
             r#"
-            function check(p) {
+            export function check(p) {
                 const parts = [];
                 if (p & Permissions.Read) parts.push("read");
                 if (p & Permissions.Write) parts.push("write");
