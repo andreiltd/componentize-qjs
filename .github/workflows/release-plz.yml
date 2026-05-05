@@ -96,6 +96,19 @@ jobs:
     with:
       release_tag: ${{ needs.release-plz-release.outputs.release_tag }}
 
+  publish-npm:
+    name: Publish npm packages
+    needs: release-plz-release
+    if: needs.release-plz-release.outputs.releases_created == 'true' && needs.release-plz-release.outputs.release_tag != ''
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/npm-publish.yml
+    with:
+      release_tag: ${{ needs.release-plz-release.outputs.release_tag }}
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
   release-plz-pr:
     name: Release-plz PR
     runs-on: ubuntu-latest
