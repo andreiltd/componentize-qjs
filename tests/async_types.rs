@@ -1349,7 +1349,7 @@ async fn test_host_stream_to_guest() {
 
     // Create a host-side stream producing 5 bytes
     let (inst, store) = instance.parts();
-    let reader = StreamReader::new(&mut *store, ByteProducer::new(vec![1, 2, 3, 4, 5]));
+    let reader = StreamReader::new(&mut *store, ByteProducer::new(vec![1, 2, 3, 4, 5])).unwrap();
 
     // Get the typed function and call it with the stream
     let func = inst
