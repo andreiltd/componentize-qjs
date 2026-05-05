@@ -30,13 +30,13 @@ anyhow.workspace = true
 bytes = "1"
 tokio.workspace = true
 wit-parser.workspace = true
-wit-component = { version = "0.244", features = ["dummy-module"] }
-wit-dylib = "0.244"
+wit-component = { version = "0.248", features = ["dummy-module"] }
+wit-dylib = "0.248"
 wasi-preview1-component-adapter-provider = "44"
 wasmtime.workspace = true
 wasmtime-wasi.workspace = true
 wasmtime-wizer = { version = "44", features = ["component-model", "wasmtime"] }
-wac-graph = "0.9"
+wac-graph = "0.10"
 indexmap = "2"
 
 [build-dependencies]

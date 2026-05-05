@@ -109,15 +109,15 @@ impl<'a> EmitContext<'a> {
                     self.collect_from_function(f);
                 }
             }
-            WorldItem::Type(id) => {
+            WorldItem::Type { id, .. } => {
                 self.collect_from_type_id(*id);
             }
         }
     }
 
     fn collect_from_function(&mut self, func: &wit_parser::Function) {
-        for (_, ty) in &func.params {
-            self.collect_from_type(ty);
+        for param in &func.params {
+            self.collect_from_type(&param.ty);
         }
         if let Some(result) = &func.result {
             self.collect_from_type(result);
