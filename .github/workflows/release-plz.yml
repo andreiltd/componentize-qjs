@@ -89,6 +89,7 @@ jobs:
     needs: release-plz-release
     if: needs.release-plz-release.outputs.releases_created == 'true' && needs.release-plz-release.outputs.release_tag != ''
     permissions:
+      actions: read
       contents: read
       id-token: write
       packages: write
