@@ -110,17 +110,19 @@ componentize-qjs [OPTIONS] --wit <WIT> --js <JS>
 | `--world <NAME>` | `-n` | World name when the WIT defines multiple worlds |
 | `--stub-wasi` | | Replace all WASI imports with trap stubs |
 | `--minify` | `-m` | Minify JS source before embedding |
+| `--opt-size` | | Use the built-in QuickJS runtime optimized for size |
+| `--runtime <PATH>` | | Custom QuickJS runtime Wasm module to embed |
 
 ### Cargo features
 
 | Feature | Effect |
 |---|---|
-| `optimize-size` | Uses `-Oz` instead of `-O3` for smaller output |
+| `opt-size` | Selects the bundled opt-size runtime when no runtime option is provided by the CLI or npm API |
 
 Build with features:
 
 ```bash
-cargo build --release --features optimize-size
+cargo build --release --features opt-size
 ```
 
 ## Using Imports
@@ -365,9 +367,12 @@ import { componentize } from "componentize-qjs";
 const { component } = await componentize({
     witPath: "hello.wit",
     jsSource: "export function greet(name) { return `Hello, ${name}!`; }",
+    optSize: true,
 });
 // component is a Buffer containing the WebAssembly component bytes
 ```
+
+Runtime selection is available through `optSize`, `runtime`, or `runtimeBytes`; provide only one of those options. The `runtime` option is a path to a custom QuickJS runtime Wasm module.
 
 ## Acknowledgments
 

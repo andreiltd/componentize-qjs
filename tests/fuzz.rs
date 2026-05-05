@@ -14,10 +14,10 @@ mod common;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
-use quickcheck::{quickcheck, Arbitrary, Gen, TestResult};
+use quickcheck::{Arbitrary, Gen, TestResult, quickcheck};
 use wasmtime::component::Val;
 
-use componentize_qjs::ComponentizeOpts;
+use componentize_qjs::{ComponentizeOpts, Runtime};
 
 const MAX_SAFE_INT: i64 = (1i64 << 53) - 1;
 const MEM_TOLERANCE: i64 = 1024;
@@ -257,6 +257,7 @@ mod fuzz {
                 world_name: None,
                 stub_wasi: true,
                 disable_gc: false,
+                runtime: Runtime::Default,
             };
 
             let rt = tokio::runtime::Builder::new_current_thread()
@@ -458,6 +459,7 @@ mod fuzz_async {
                 world_name: None,
                 stub_wasi: false,
                 disable_gc: false,
+                runtime: Runtime::Default,
             };
 
             let rt = tokio::runtime::Builder::new_current_thread()

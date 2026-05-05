@@ -1553,6 +1553,7 @@ fn test_exported_resource() {
         world_name: None,
         stub_wasi: true,
         disable_gc: false,
+        runtime: componentize_qjs::Runtime::Default,
     };
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -1666,6 +1667,7 @@ fn test_static_resource_method_in_interface() {
         world_name: None,
         stub_wasi: true,
         disable_gc: false,
+        runtime: componentize_qjs::Runtime::Default,
     };
 
     let rt = tokio::runtime::Builder::new_current_thread()

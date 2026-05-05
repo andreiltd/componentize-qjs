@@ -17,6 +17,12 @@ pub struct ComponentizeOpts {
     pub stub_wasi: Option<bool>,
     /// Disable automatic garbage collection (default: false)
     pub disable_gc: Option<bool>,
+    /// Use the built-in runtime optimized for smaller generated components
+    pub opt_size: Option<bool>,
+    /// Path to a custom QuickJS runtime Wasm module
+    pub runtime: Option<String>,
+    /// Custom QuickJS runtime Wasm bytes
+    pub runtime_bytes: Option<Buffer>,
 }
 
 /// Result of componentizing a JavaScript source.
@@ -41,12 +47,52 @@ pub async fn componentize(opts: ComponentizeOpts) -> Result<ComponentizeResult> 
         ));
     }
 
+    let runtime_sources = [
+        opts.opt_size.unwrap_or(false),
+        opts.runtime.is_some(),
+        opts.runtime_bytes.is_some(),
+    ]
+    .into_iter()
+    .filter(|provided| *provided)
+    .count();
+    if runtime_sources > 1 {
+        return Err(Error::new(
+            Status::InvalidArg,
+            "Use only one of optSize, runtime, or runtimeBytes".to_string(),
+        ));
+    }
+
+    let custom_runtime = match &opts.runtime {
+        Some(runtime_file) => {
+            let runtime_path = PathBuf::from(runtime_file);
+            if !runtime_path.exists() {
+                return Err(Error::new(
+                    Status::InvalidArg,
+                    format!("Runtime file not found: {runtime_file}"),
+                ));
+            }
+            Some(std::fs::read(&runtime_path).map_err(|e| {
+                Error::new(
+                    Status::GenericFailure,
+                    format!("Failed to read runtime file {runtime_file}: {e}"),
+                )
+            })?)
+        }
+        None => opts.runtime_bytes.as_ref().map(|bytes| bytes.to_vec()),
+    };
+    let runtime = match custom_runtime.as_deref() {
+        Some(wasm) => componentize_qjs::Runtime::Custom(wasm),
+        None if opts.opt_size.unwrap_or(false) => componentize_qjs::Runtime::OptSize,
+        None => componentize_qjs::Runtime::default(),
+    };
+
     let opts = componentize_qjs::ComponentizeOpts {
         wit_path: &wit_path,
         js_source: &opts.js_source,
         world_name: opts.world.as_deref(),
         stub_wasi: opts.stub_wasi.unwrap_or(false),
         disable_gc: opts.disable_gc.unwrap_or(false),
+        runtime,
     };
 
     let component = componentize_qjs::componentize(&opts)

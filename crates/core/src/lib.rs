@@ -3,7 +3,7 @@ pub mod stubwasi;
 
 use std::path::Path;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
 use stubwasi::stub_wasi_imports;
 use wasi_preview1_component_adapter_provider::WASI_SNAPSHOT_PREVIEW1_REACTOR_ADAPTER;
@@ -48,6 +48,34 @@ pub struct ComponentizeOpts<'a> {
     pub stub_wasi: bool,
     /// Disable automatic garbage collection in the QuickJS runtime
     pub disable_gc: bool,
+    /// Runtime to embed before Wizer initialization
+    pub runtime: Runtime<'a>,
+}
+
+/// QuickJS runtime variant to embed in the generated component.
+#[derive(Clone, Copy, Debug)]
+pub enum Runtime<'a> {
+    /// Standard runtime optimized for speed.
+    Default,
+    /// Runtime optimized for smaller generated components.
+    OptSize,
+    /// Caller-provided runtime Wasm bytes.
+    Custom(&'a [u8]),
+}
+
+impl Default for Runtime<'_> {
+    fn default() -> Self {
+        default_builtin_runtime()
+    }
+}
+
+/// Return the built-in runtime selected by Cargo features.
+pub fn default_builtin_runtime() -> Runtime<'static> {
+    if cfg!(feature = "opt-size") {
+        Runtime::OptSize
+    } else {
+        Runtime::Default
+    }
 }
 
 /// Convert JavaScript source code into a WebAssembly component.
@@ -68,7 +96,11 @@ pub async fn componentize(opts: &ComponentizeOpts<'_>) -> Result<Vec<u8>> {
 
     let pre_wizer_component = wit_component::Linker::default()
         .validate(true)
-        .library("componentize_qjs_runtime.wasm", RUNTIME_WASM, false)?
+        .library(
+            "componentize_qjs_runtime.wasm",
+            runtime_wasm(opts.runtime),
+            false,
+        )?
         .library("wit-dylib.wasm", &wit_dylib, false)?
         .adapter(
             "wasi_snapshot_preview1",
@@ -85,6 +117,24 @@ pub async fn componentize(opts: &ComponentizeOpts<'_>) -> Result<Vec<u8>> {
     }
 
     Ok(component)
+}
+
+/// Return the built-in default runtime Wasm bytes.
+pub fn default_runtime_wasm() -> &'static [u8] {
+    DEFAULT_RUNTIME_WASM
+}
+
+/// Return the built-in opt-size runtime Wasm bytes.
+pub fn opt_size_runtime_wasm() -> &'static [u8] {
+    OPT_SIZE_RUNTIME_WASM
+}
+
+fn runtime_wasm(runtime: Runtime<'_>) -> &[u8] {
+    match runtime {
+        Runtime::Default => DEFAULT_RUNTIME_WASM,
+        Runtime::OptSize => OPT_SIZE_RUNTIME_WASM,
+        Runtime::Custom(wasm) => wasm,
+    }
 }
 
 async fn wizer_init(component: &[u8], shim: &str, js: &str, disable_gc: bool) -> Result<Vec<u8>> {

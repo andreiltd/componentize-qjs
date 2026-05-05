@@ -61,6 +61,36 @@ describe("componentize", () => {
     expect(result.component.length).toBeGreaterThan(0);
   }, TIMEOUT);
 
+  it("accepts the opt-size runtime", async () => {
+    const result = await componentize({
+      witPath: resolve(examplesDir, "hello.wit"),
+      jsSource: readExample("hello.js"),
+      optSize: true,
+    });
+
+    expect(result.component).toBeInstanceOf(Buffer);
+    expect(result.component.length).toBeGreaterThan(0);
+  }, TIMEOUT);
+
+  it("rejects invalid runtime options", async () => {
+    await expect(
+      componentize({
+        witPath: resolve(examplesDir, "hello.wit"),
+        jsSource: readExample("hello.js"),
+        runtime: "/nonexistent/runtime.wasm",
+      }),
+    ).rejects.toThrow(/runtime file not found/i);
+
+    await expect(
+      componentize({
+        witPath: resolve(examplesDir, "hello.wit"),
+        jsSource: readExample("hello.js"),
+        optSize: true,
+        runtimeBytes: Buffer.from([]),
+      }),
+    ).rejects.toThrow(/only one of optSize, runtime, or runtimeBytes/i);
+  });
+
   it("rejects a non-existent WIT path", async () => {
     await expect(
       componentize({
