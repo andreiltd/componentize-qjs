@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use wasmtime::component::Val;
 
-use common::{wasi_wit_dir, TestCase};
+use common::{TestCase, wasi_wit_dir};
 
 #[test]
 fn test_wasi_random() {

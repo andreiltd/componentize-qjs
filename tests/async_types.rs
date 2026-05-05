@@ -6,10 +6,10 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use common::{TestCase, WasiCtxState};
+use wasmtime::StoreContextMut;
 use wasmtime::component::{
     Destination, StreamProducer, StreamReader, StreamResult, Val, VecBuffer,
 };
-use wasmtime::StoreContextMut;
 
 #[tokio::test]
 async fn test_async_echo_u32() {

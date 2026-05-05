@@ -22,20 +22,24 @@ env:
   RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
   IMAGE_NAME: ${{ github.repository }}
   COMPONENT_NAME: componentize-qjs-runtime
+  COMPONENT_NAME_OPT_SIZE: componentize-qjs-runtime-opt-size
   COMPONENT_DESCRIPTION: QuickJS runtime for componentize-qjs
+  COMPONENT_DESCRIPTION_OPT_SIZE: QuickJS runtime for componentize-qjs optimized for size
   COMPONENT_SOURCE: https://github.com/${{ github.repository }}
   COMPONENT_HOMEPAGE: https://github.com/${{ github.repository }}
   COMPONENT_LICENSES: Apache-2.0
   WASM_FILE: dist/componentize_qjs_runtime.wasm
+  WASM_FILE_OPT_SIZE: dist/componentize_qjs_runtime_opt_size.wasm
   SBOM_FILE: dist/componentize_qjs_runtime.wasm.cdx.json
+  SBOM_FILE_OPT_SIZE: dist/componentize_qjs_runtime_opt_size.wasm.cdx.json
 
 jobs:
-  publish:
-    name: Publish runtime Wasm
+  build:
+    name: Build runtime Wasm
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     permissions:
-      id-token: write
-      packages: write
       contents: read
 
     steps:
@@ -63,37 +67,19 @@ jobs:
           test -n "$version" || { echo "ERROR: release tag is empty"; exit 1; }
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
-      - name: Login to GitHub Container Registry
-        if: github.event_name != 'workflow_dispatch'
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-
-      - name: Install cosign
-        if: github.event_name != 'workflow_dispatch'
-        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
-
-      - name: Install publish tools
+      - name: Install build tools
         run: |
-          cargo binstall wkg --force
           cargo binstall cargo-auditable --force
           cargo binstall auditable2cdx --force
 
       - name: Build auditable runtime
         shell: bash
         run: |
-          rm -rf crates/core/prebuilt dist target/runtime-publish
-          COMPONENTIZE_QJS_RUNTIME_AUDITABLE=1 cargo build --release -p componentize-qjs --target-dir target/runtime-publish
-          mkdir -p dist
-          mapfile -t runtimes < <(find target/runtime-publish -path '*/out/runtime.wasm' -type f | sort)
-          test "${#runtimes[@]}" -eq 1 || { printf 'ERROR: expected exactly one runtime.wasm, found %s\n' "${#runtimes[@]}"; printf '%s\n' "${runtimes[@]}"; exit 1; }
-          cp "${runtimes[0]}" "${WASM_FILE}"
-          sha256sum "${WASM_FILE}" > "${WASM_FILE}.sha256"
-          auditable2cdx "${WASM_FILE}" > "${SBOM_FILE}"
-          test -s "${SBOM_FILE}" || { echo "ERROR: runtime SBOM is empty"; exit 1; }
-          echo "Runtime ready at ${WASM_FILE} ($(wc -c < "${WASM_FILE}") bytes)"
+          bash .github/scripts/prepare-runtime-artifacts.sh \
+            target/runtime-publish \
+            dist \
+            runtime.wasm=componentize_qjs_runtime.wasm \
+            runtime-opt-size.wasm=componentize_qjs_runtime_opt_size.wasm
 
       - name: Upload runtime artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -103,46 +89,66 @@ jobs:
             ${{ env.WASM_FILE }}
             ${{ env.WASM_FILE }}.sha256
             ${{ env.SBOM_FILE }}
+            ${{ env.WASM_FILE_OPT_SIZE }}
+            ${{ env.WASM_FILE_OPT_SIZE }}.sha256
+            ${{ env.SBOM_FILE_OPT_SIZE }}
           if-no-files-found: error
 
-      - name: Publish `:<version>` to GitHub Container Registry
-        if: github.event_name != 'workflow_dispatch'
-        id: publish_versioned
-        uses: bytecodealliance/wkg-github-action@10b3b04b9059ba46208cd7daf7d352af14bded0f # v5
+  publish:
+    name: Publish ${{ matrix.runtime }} runtime (${{ matrix.channel }})
+    if: github.event_name != 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      id-token: write
+      packages: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [default, opt-size]
+        channel: [versioned, latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          file: ${{ env.WASM_FILE }}
-          oci-reference-without-tag: ghcr.io/${{ env.IMAGE_NAME }}/${{ env.COMPONENT_NAME }}
-          version: ${{ steps.version.outputs.version }}
-          description: ${{ env.COMPONENT_DESCRIPTION }}
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Download runtime artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: componentize-qjs-runtime
+          path: dist
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@dc19f1e48450eefe5a29b8da6c6b00a87d730b37 # v1.18.1
+
+      - name: Install wkg
+        run: cargo binstall wkg --force
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
+
+      - name: Publish runtime
+        uses: ./.github/actions/publish-runtime
+        with:
+          file: ${{ matrix.runtime == 'default' && env.WASM_FILE || env.WASM_FILE_OPT_SIZE }}
+          sbom-file: ${{ matrix.runtime == 'default' && env.SBOM_FILE || env.SBOM_FILE_OPT_SIZE }}
+          oci-reference-without-tag: ghcr.io/${{ env.IMAGE_NAME }}/${{ matrix.runtime == 'default' && env.COMPONENT_NAME || env.COMPONENT_NAME_OPT_SIZE }}
+          version: ${{ matrix.channel == 'versioned' && needs.build.outputs.version || 'latest' }}
+          description: ${{ matrix.runtime == 'default' && env.COMPONENT_DESCRIPTION || env.COMPONENT_DESCRIPTION_OPT_SIZE }}
           source: ${{ env.COMPONENT_SOURCE }}
           homepage: ${{ env.COMPONENT_HOMEPAGE }}
           licenses: ${{ env.COMPONENT_LICENSES }}
-
-      - name: Sign the versioned runtime
-        if: github.event_name != 'workflow_dispatch'
-        run: cosign sign --yes ghcr.io/${{ env.IMAGE_NAME }}/${{ env.COMPONENT_NAME }}@${{ steps.publish_versioned.outputs.digest }}
-
-      - name: Attest the versioned runtime SBOM
-        if: github.event_name != 'workflow_dispatch'
-        run: cosign attest --yes --type cyclonedx --predicate "${SBOM_FILE}" ghcr.io/${{ env.IMAGE_NAME }}/${{ env.COMPONENT_NAME }}@${{ steps.publish_versioned.outputs.digest }}
-
-      - name: Publish `:latest` to GitHub Container Registry
-        if: github.event_name != 'workflow_dispatch'
-        id: publish_latest
-        uses: bytecodealliance/wkg-github-action@10b3b04b9059ba46208cd7daf7d352af14bded0f # v5
-        with:
-          file: ${{ env.WASM_FILE }}
-          oci-reference-without-tag: ghcr.io/${{ env.IMAGE_NAME }}/${{ env.COMPONENT_NAME }}
-          version: latest
-          description: ${{ env.COMPONENT_DESCRIPTION }}
-          source: ${{ env.COMPONENT_SOURCE }}
-          homepage: ${{ env.COMPONENT_HOMEPAGE }}
-          licenses: ${{ env.COMPONENT_LICENSES }}
-
-      - name: Sign the latest runtime
-        if: github.event_name != 'workflow_dispatch'
-        run: cosign sign --yes ghcr.io/${{ env.IMAGE_NAME }}/${{ env.COMPONENT_NAME }}@${{ steps.publish_latest.outputs.digest }}
-
-      - name: Attest the latest runtime SBOM
-        if: github.event_name != 'workflow_dispatch'
-        run: cosign attest --yes --type cyclonedx --predicate "${SBOM_FILE}" ghcr.io/${{ env.IMAGE_NAME }}/${{ env.COMPONENT_NAME }}@${{ steps.publish_latest.outputs.digest }}

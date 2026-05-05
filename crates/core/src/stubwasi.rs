@@ -7,11 +7,11 @@
 //! 4. Encode it as a stub component
 //! 5. Use `wac-graph` to compose the stub into the original component
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use indexmap::IndexMap;
-use wac_graph::{plug, types::Package, CompositionGraph, EncodeOptions};
-use wit_component::{dummy_module, embed_component_metadata, ComponentEncoder, StringEncoding};
-use wit_parser::decoding::{decode, DecodedWasm};
+use wac_graph::{CompositionGraph, EncodeOptions, plug, types::Package};
+use wit_component::{ComponentEncoder, StringEncoding, dummy_module, embed_component_metadata};
+use wit_parser::decoding::{DecodedWasm, decode};
 use wit_parser::{Docs, ManglingAndAbi, Resolve, Stability, World, WorldItem, WorldKey};
 
 /// Stub all WASI imports in a component, producing a self-contained component.

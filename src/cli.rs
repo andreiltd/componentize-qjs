@@ -1,4 +1,4 @@
-use componentize_qjs::{componentize, ComponentizeOpts};
+use componentize_qjs::{ComponentizeOpts, Runtime, componentize};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -44,6 +44,14 @@ pub struct CliArgs {
     /// Disable automatic garbage collection in the QuickJS runtime
     #[arg(long)]
     pub disable_gc: bool,
+
+    /// Use the built-in runtime optimized for smaller generated components
+    #[arg(long, conflicts_with = "runtime")]
+    pub opt_size: bool,
+
+    /// Path to a custom QuickJS runtime Wasm module
+    #[arg(long, value_name = "PATH")]
+    pub runtime: Option<std::path::PathBuf>,
 }
 
 /// Run the componentize-qjs CLI with the given arguments.
@@ -56,6 +64,11 @@ pub async fn run(args: Vec<String>) -> Result<()> {
     }
     if !args.js.exists() {
         anyhow::bail!("JavaScript file not found: {}", args.js.display());
+    }
+    if let Some(runtime_file) = &args.runtime
+        && !runtime_file.exists()
+    {
+        anyhow::bail!("Runtime file not found: {}", runtime_file.display());
     }
 
     let js_source = fs::read_to_string(&args.js)
@@ -92,6 +105,12 @@ pub async fn run(args: Vec<String>) -> Result<()> {
     println!("  JS:     {}", args.js.display());
     println!("  Output: {}", args.output.display());
 
+    let runtime = match &args.runtime {
+        Some(file) => Runtime::Custom(&fs::read(file)?),
+        None if args.opt_size => Runtime::OptSize,
+        None => Runtime::default(),
+    };
+
     if args.stub_wasi {
         println!("Stubbing WASI imports...");
     }
@@ -102,6 +121,7 @@ pub async fn run(args: Vec<String>) -> Result<()> {
         world_name: args.world.as_deref(),
         stub_wasi: args.stub_wasi,
         disable_gc: args.disable_gc,
+        runtime,
     })
     .await?;
 

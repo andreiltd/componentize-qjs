@@ -7,7 +7,7 @@ use predicates::prelude::*;
 use tempfile::TempDir;
 use wasmtime::component::Val;
 
-use common::{componentize_qjs, run_cli_build, ComponentInstance};
+use common::{ComponentInstance, componentize_qjs, run_cli_build};
 
 #[test]
 fn test_cli_help() {
@@ -15,7 +15,9 @@ fn test_cli_help() {
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Usage: componentize-qjs"));
+        .stdout(predicate::str::contains("Usage: componentize-qjs"))
+        .stdout(predicate::str::contains("--opt-size"))
+        .stdout(predicate::str::contains("--runtime <PATH>"));
 }
 
 #[test]
@@ -41,6 +43,23 @@ fn test_cli_errors() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("not found"));
+
+    let js_path = dir.path().join("test.js");
+    fs::write(&js_path, "export {};").unwrap();
+    let runtime_path = dir.path().join("runtime.wasm");
+    fs::write(&runtime_path, componentize_qjs::default_runtime_wasm()).unwrap();
+
+    componentize_qjs()
+        .arg("--wit")
+        .arg(&wit_path)
+        .arg("--js")
+        .arg(&js_path)
+        .arg("--opt-size")
+        .arg("--runtime")
+        .arg(&runtime_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
 }
 
 #[test]
@@ -69,6 +88,56 @@ fn test_cli_stub_wasi() {
     let wasm = fs::read(&output).unwrap();
     let mut inst = ComponentInstance::from_wasm(wasm, vec![], vec![])
         .expect("should instantiate stubbed component");
+
+    assert_eq!(inst.call1("add", &[Val::U32(3), Val::U32(4)]), Val::U32(7));
+}
+
+#[test]
+fn test_cli_opt_size_runtime() {
+    let (output, _dir) = run_cli_build(
+        "package test:runtime;\nworld runtime { export add: func(a: u32, b: u32) -> u32; }",
+        "export function add(a, b) { return a + b; }",
+        &["--opt-size"],
+    );
+
+    let wasm = fs::read(&output).unwrap();
+    let mut inst = ComponentInstance::from_wasm(wasm, vec![], vec![])
+        .expect("should instantiate opt-size runtime component");
+
+    assert_eq!(inst.call1("add", &[Val::U32(3), Val::U32(4)]), Val::U32(7));
+}
+
+#[test]
+fn test_cli_custom_runtime_file() {
+    let dir = TempDir::new().unwrap();
+    let wit_path = dir.path().join("test.wit");
+    let js_path = dir.path().join("test.js");
+    let output = dir.path().join("output.wasm");
+    let runtime_path = dir.path().join("runtime.wasm");
+
+    fs::write(
+        &wit_path,
+        "package test:runtime;\nworld runtime { export add: func(a: u32, b: u32) -> u32; }",
+    )
+    .unwrap();
+    fs::write(&js_path, "export function add(a, b) { return a + b; }").unwrap();
+    fs::write(&runtime_path, componentize_qjs::default_runtime_wasm()).unwrap();
+
+    componentize_qjs()
+        .arg("--wit")
+        .arg(&wit_path)
+        .arg("--js")
+        .arg(&js_path)
+        .arg("--output")
+        .arg(&output)
+        .arg("--runtime")
+        .arg(&runtime_path)
+        .assert()
+        .success();
+
+    let wasm = fs::read(&output).unwrap();
+    let mut inst = ComponentInstance::from_wasm(wasm, vec![], vec![])
+        .expect("should instantiate custom runtime component");
 
     assert_eq!(inst.call1("add", &[Val::U32(3), Val::U32(4)]), Val::U32(7));
 }
