@@ -20,6 +20,12 @@ export interface ComponentizeOpts {
   stubWasi?: boolean
   /** Disable automatic garbage collection (default: false) */
   disableGc?: boolean
+  /** Use the built-in runtime optimized for smaller generated components */
+  optSize?: boolean
+  /** Path to a custom QuickJS runtime Wasm module */
+  runtime?: string
+  /** Custom QuickJS runtime Wasm bytes */
+  runtimeBytes?: Buffer
 }
 
 /** Result of componentizing a JavaScript source. */

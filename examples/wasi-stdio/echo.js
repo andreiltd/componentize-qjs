@@ -1,5 +1,5 @@
-import stdin from "wasi:cli/stdin@0.3.0-rc-2026-01-06";
-import stdout from "wasi:cli/stdout@0.3.0-rc-2026-01-06";
+import stdin from "wasi:cli/stdin@0.3.0-rc-2026-03-15";
+import stdout from "wasi:cli/stdout@0.3.0-rc-2026-03-15";
 
 export const run = {
     async run() {

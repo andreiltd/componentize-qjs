@@ -16,6 +16,9 @@ include = [
     "prebuilt/runtime.wasm",
     "prebuilt/runtime.wasm.cdx.json",
     "prebuilt/runtime.wasm.sha256",
+    "prebuilt/runtime-opt-size.wasm",
+    "prebuilt/runtime-opt-size.wasm.cdx.json",
+    "prebuilt/runtime-opt-size.wasm.sha256",
 ]
 
 [lib]
@@ -29,10 +32,10 @@ tokio.workspace = true
 wit-parser.workspace = true
 wit-component = { version = "0.244", features = ["dummy-module"] }
 wit-dylib = "0.244"
-wasi-preview1-component-adapter-provider = "41"
+wasi-preview1-component-adapter-provider = "44"
 wasmtime.workspace = true
 wasmtime-wasi.workspace = true
-wasmtime-wizer = { version = "42", features = ["component-model", "wasmtime"] }
+wasmtime-wizer = { version = "44", features = ["component-model", "wasmtime"] }
 wac-graph = "0.9"
 indexmap = "2"
 
@@ -45,4 +48,4 @@ ureq = "3"
 
 [features]
 default = []
-optimize-size = []
+opt-size = []

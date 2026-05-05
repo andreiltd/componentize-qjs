@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use wasmtime::component::Val;
 
-use common::{wasi_wit_dir, TestCase};
+use common::{TestCase, wasi_wit_dir};
 
 #[test]
 fn test_wasi_random() {
@@ -224,6 +224,7 @@ fn test_wasi_named_type_imports() {
 #[tokio::test]
 async fn test_wasi_0_3_stdio_example() {
     let wit_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/wasi-stdio");
+
     let mut inst = TestCase::new()
         .wit_dir(wit_path)
         .world("wasi-stdio")
@@ -236,7 +237,7 @@ async fn test_wasi_0_3_stdio_example() {
     {
         let (instance, store) = inst.parts();
         let iface_idx = instance
-            .get_export_index(&mut *store, None, "wasi:cli/run@0.3.0-rc-2026-01-06")
+            .get_export_index(&mut *store, None, "wasi:cli/run@0.3.0-rc-2026-03-15")
             .expect("wasi:cli/run export not found");
         let run_idx = instance
             .get_export_index(&mut *store, Some(&iface_idx), "run")

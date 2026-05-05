@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{env, fs};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use flate2::read::GzDecoder;
 
 const WASI_SDK_VERSION: &str = "30";
@@ -13,6 +13,32 @@ const BINARYEN_VERSION: &str = "126";
 const BINARYEN_DL_URL: &str = "https://github.com/WebAssembly/binaryen/releases/download";
 const RUNTIME_AUDITABLE_ENV: &str = "COMPONENTIZE_QJS_RUNTIME_AUDITABLE";
 const MAX_ARCHIVE_BYTES: u64 = 1_000_000_000;
+
+#[derive(Clone, Copy)]
+enum RuntimeBuild {
+    Default,
+    OptSize,
+}
+
+impl RuntimeBuild {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::OptSize => "opt-size",
+        }
+    }
+
+    fn filename(self) -> &'static str {
+        match self {
+            Self::Default => "runtime.wasm",
+            Self::OptSize => "runtime-opt-size.wasm",
+        }
+    }
+
+    fn optimize_size(self) -> bool {
+        matches!(self, Self::OptSize)
+    }
+}
 
 fn main() -> Result<()> {
     let manifest_dir =
@@ -25,15 +51,29 @@ fn main() -> Result<()> {
         runtime_dir.display()
     );
     println!("cargo:rerun-if-changed=prebuilt/runtime.wasm");
+    println!("cargo:rerun-if-changed=prebuilt/runtime-opt-size.wasm");
     println!("cargo:rerun-if-env-changed={RUNTIME_AUDITABLE_ENV}");
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").context("OUT_DIR not set")?);
 
     // Check for pre-built runtime (used when installing from crates.io)
     let prebuilt = manifest_dir.join("prebuilt/runtime.wasm");
+    let prebuilt_opt_size = manifest_dir.join("prebuilt/runtime-opt-size.wasm");
     if prebuilt.exists() {
+        if !prebuilt_opt_size.exists() {
+            bail!(
+                "Pre-built default runtime exists at {} but opt-size runtime is missing at {}. \
+                 If installing from crates.io, this is a packaging bug.",
+                prebuilt.display(),
+                prebuilt_opt_size.display(),
+            );
+        }
         eprintln!("Using pre-built runtime at: {}", prebuilt.display());
-        return emit_runtime_wasm(&prebuilt, &out_dir);
+        eprintln!(
+            "Using pre-built opt-size runtime at: {}",
+            prebuilt_opt_size.display()
+        );
+        return emit_runtime_wasms(&prebuilt, &prebuilt_opt_size, &out_dir);
     }
 
     // Check that runtime source is available (won't be when installed from crates.io
@@ -48,26 +88,35 @@ fn main() -> Result<()> {
         );
     }
 
-    let runtime_wasm = build_runtime(&out_dir)?;
-    emit_runtime_wasm(&runtime_wasm, &out_dir)
+    let runtime_wasm = build_runtime(&out_dir, RuntimeBuild::Default)?;
+    let opt_size_runtime_wasm = build_runtime(&out_dir, RuntimeBuild::OptSize)?;
+    emit_runtime_wasms(&runtime_wasm, &opt_size_runtime_wasm, &out_dir)
 }
 
-fn emit_runtime_wasm(runtime_wasm: &Path, out_dir: &Path) -> Result<()> {
+fn emit_runtime_wasms(
+    runtime_wasm: &Path,
+    opt_size_runtime_wasm: &Path,
+    out_dir: &Path,
+) -> Result<()> {
     println!(
         "cargo:rustc-env=RUNTIME_WASM_PATH={}",
         runtime_wasm.display()
     );
+    println!(
+        "cargo:rustc-env=RUNTIME_OPT_SIZE_WASM_PATH={}",
+        opt_size_runtime_wasm.display()
+    );
 
     let output = format!(
-        r#"const RUNTIME_WASM: &[u8] = include_bytes!({:?});"#,
-        runtime_wasm,
+        r#"const DEFAULT_RUNTIME_WASM: &[u8] = include_bytes!({runtime_wasm:?});
+           const OPT_SIZE_RUNTIME_WASM: &[u8] = include_bytes!({opt_size_runtime_wasm:?});"#,
     );
     fs::write(out_dir.join("output.rs"), output).context("Failed to write output.rs")?;
 
     Ok(())
 }
 
-fn build_runtime(out_dir: &Path) -> Result<PathBuf> {
+fn build_runtime(out_dir: &Path, build: RuntimeBuild) -> Result<PathBuf> {
     let target = "wasm32-wasip2";
     let upcase = target.to_uppercase().replace('-', "_");
 
@@ -76,7 +125,7 @@ fn build_runtime(out_dir: &Path) -> Result<PathBuf> {
     eprintln!("Using wasi-sdk at: {}", wasi_sdk.display());
 
     let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
-    let optimize_size = env::var("CARGO_FEATURE_OPTIMIZE_SIZE").is_ok();
+    let optimize_size = build.optimize_size();
     let is_release = profile == "release";
 
     // Link libc statically into the shared wasm module
@@ -95,6 +144,7 @@ fn build_runtime(out_dir: &Path) -> Result<PathBuf> {
     };
 
     let clang = executable(&wasi_sdk, "bin/clang");
+    let target_dir = out_dir.join(format!("runtime-{}", build.name()));
     let mut cargo = Command::new("cargo");
     if env::var_os(RUNTIME_AUDITABLE_ENV).is_some() {
         cargo.arg("auditable");
@@ -105,7 +155,7 @@ fn build_runtime(out_dir: &Path) -> Result<PathBuf> {
         .arg(target)
         .arg("--package=componentize-qjs-runtime")
         .arg("--no-default-features")
-        .env("CARGO_TARGET_DIR", out_dir)
+        .env("CARGO_TARGET_DIR", &target_dir)
         .env(format!("CARGO_TARGET_{upcase}_RUSTFLAGS"), rustflags)
         .env(format!("CARGO_TARGET_{upcase}_LINKER"), &clang)
         .env(format!("CFLAGS_{}", target.replace('-', "_")), cflags)
@@ -118,18 +168,18 @@ fn build_runtime(out_dir: &Path) -> Result<PathBuf> {
         cargo.arg("--release");
     }
 
-    eprintln!("Building runtime: {cargo:?}");
+    eprintln!("Building {} runtime: {cargo:?}", build.name());
     let status = cargo.status().context("Failed to run cargo build")?;
     if !status.success() {
-        bail!("Failed to build runtime");
+        bail!("Failed to build {} runtime", build.name());
     }
 
-    let runtime_src = out_dir
+    let runtime_src = target_dir
         .join(target)
         .join(&profile)
         .join("componentize_qjs_runtime.wasm");
 
-    let runtime_dst = out_dir.join("runtime.wasm");
+    let runtime_dst = out_dir.join(build.filename());
 
     fs::copy(&runtime_src, &runtime_dst)
         .with_context(|| format!("Failed to copy {}", runtime_src.display()))?;

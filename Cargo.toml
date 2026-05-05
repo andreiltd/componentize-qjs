@@ -5,7 +5,7 @@ resolver = "2"
 
 [workspace.package]
 version = "0.1.1"
-edition = "2021"
+edition = "2024"
 rust-version = "1.94"
 license = "Apache-2.0"
 repository = "https://github.com/andreiltd/componentize-qjs"
@@ -17,8 +17,8 @@ componentize-qjs-cli = { path = ".", version = "0.1.1" }
 anyhow = "1.0"
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", default-features = false, features = ["rt", "macros"] }
-wasmtime = { version = "42", features = ["component-model", "async"] }
-wasmtime-wasi = { version = "42", features = ["p3"] }
+wasmtime = { version = "44", features = ["component-model", "async"] }
+wasmtime-wasi = { version = "44", features = ["p3"] }
 wit-parser = "0.244"
 
 [package]
@@ -51,6 +51,10 @@ oxc_allocator = "0.115.0"
 oxc_codegen = "0.115.0"
 oxc_parser = "0.115.0"
 oxc_span = "0.115.0"
+
+[features]
+default = []
+opt-size = ["componentize-qjs/opt-size"]
 
 [dev-dependencies]
 assert_cmd = "2.0"

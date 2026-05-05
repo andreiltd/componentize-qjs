@@ -11,7 +11,7 @@ use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::p2::pipe::{MemoryInputPipe, MemoryOutputPipe};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
-use componentize_qjs::ComponentizeOpts;
+use componentize_qjs::{ComponentizeOpts, Runtime};
 
 pub struct WasiCtxState {
     pub wasi: WasiCtx,
@@ -149,6 +149,7 @@ impl TestCase {
             world_name: self.world_name.as_deref(),
             stub_wasi: self.stub_wasi,
             disable_gc: false,
+            runtime: Runtime::Default,
         };
 
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -177,6 +178,7 @@ impl TestCase {
             world_name: self.world_name.as_deref(),
             stub_wasi: self.stub_wasi,
             disable_gc: false,
+            runtime: Runtime::Default,
         };
 
         let wasm = componentize_qjs::componentize(&opts).await?;

@@ -6,10 +6,10 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use common::{TestCase, WasiCtxState};
+use wasmtime::StoreContextMut;
 use wasmtime::component::{
     Destination, StreamProducer, StreamReader, StreamResult, Val, VecBuffer,
 };
-use wasmtime::StoreContextMut;
 
 #[tokio::test]
 async fn test_async_echo_u32() {
@@ -1349,7 +1349,7 @@ async fn test_host_stream_to_guest() {
 
     // Create a host-side stream producing 5 bytes
     let (inst, store) = instance.parts();
-    let reader = StreamReader::new(&mut *store, ByteProducer::new(vec![1, 2, 3, 4, 5]));
+    let reader = StreamReader::new(&mut *store, ByteProducer::new(vec![1, 2, 3, 4, 5])).unwrap();
 
     // Get the typed function and call it with the stream
     let func = inst

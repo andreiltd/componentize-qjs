@@ -1,0 +1,51 @@
+name: Publish runtime artifact
+description: Publish, sign, and attest one runtime Wasm artifact
+
+inputs:
+  file:
+    description: Path to the runtime Wasm file
+    required: true
+  sbom-file:
+    description: Path to the runtime CycloneDX SBOM
+    required: true
+  oci-reference-without-tag:
+    description: OCI reference without the version tag
+    required: true
+  version:
+    description: Version tag to publish
+    required: true
+  description:
+    description: OCI artifact description
+    required: true
+  source:
+    description: Source URL
+    required: true
+  homepage:
+    description: Homepage URL
+    required: true
+  licenses:
+    description: SPDX license expression
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Publish runtime to GitHub Container Registry
+      id: publish
+      uses: bytecodealliance/wkg-github-action@10b3b04b9059ba46208cd7daf7d352af14bded0f # v5
+      with:
+        file: ${{ inputs.file }}
+        oci-reference-without-tag: ${{ inputs.oci-reference-without-tag }}
+        version: ${{ inputs.version }}
+        description: ${{ inputs.description }}
+        source: ${{ inputs.source }}
+        homepage: ${{ inputs.homepage }}
+        licenses: ${{ inputs.licenses }}
+
+    - name: Sign runtime
+      shell: bash
+      run: cosign sign --yes "${{ inputs.oci-reference-without-tag }}@${{ steps.publish.outputs.digest }}"
+
+    - name: Attest runtime SBOM
+      shell: bash
+      run: cosign attest --yes --type cyclonedx --predicate "${{ inputs.sbom-file }}" "${{ inputs.oci-reference-without-tag }}@${{ steps.publish.outputs.digest }}"
