@@ -71,7 +71,7 @@ fn make_stub_component(
         docs: Docs::default(),
         stability: Stability::default(),
         includes: Vec::new(),
-        include_names: Vec::new(),
+        span: Default::default(),
     });
 
     let mut core_module = dummy_module(&stub_resolve, stub_world_id, ManglingAndAbi::Standard32);
