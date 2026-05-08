@@ -6,10 +6,10 @@ use std::{env, fs};
 use anyhow::{Context, Result, bail};
 use flate2::read::GzDecoder;
 
-const WASI_SDK_VERSION: &str = "30";
+const WASI_SDK_VERSION: &str = "33";
 const WASI_SKD_DL_URL: &str = "https://github.com/WebAssembly/wasi-sdk/releases/download";
 
-const BINARYEN_VERSION: &str = "126";
+const BINARYEN_VERSION: &str = "129";
 const BINARYEN_DL_URL: &str = "https://github.com/WebAssembly/binaryen/releases/download";
 const RUNTIME_AUDITABLE_ENV: &str = "COMPONENTIZE_QJS_RUNTIME_AUDITABLE";
 const MAX_ARCHIVE_BYTES: u64 = 1_000_000_000;
