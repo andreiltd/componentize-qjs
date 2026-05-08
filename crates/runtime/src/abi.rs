@@ -3,6 +3,7 @@
 //! Canonical ABI specification:
 //! <https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md>
 #![allow(unsafe_code)]
+#![cfg_attr(not(feature = "component-model-async"), allow(dead_code))]
 
 use num_enum::TryFromPrimitive;
 
@@ -262,83 +263,114 @@ impl Event {
 }
 
 // Canonical built-in imports
-#[link(wasm_import_module = "$root")]
-unsafe extern "C" {
-    #[link_name = "[waitable-set-new]"]
-    pub(crate) fn waitable_set_new() -> u32;
+#[cfg(feature = "component-model-async")]
+mod async_builtins {
+    #[link(wasm_import_module = "$root")]
+    unsafe extern "C" {
+        #[link_name = "[waitable-set-new]"]
+        pub(crate) fn waitable_set_new() -> u32;
+
+        #[link_name = "[waitable-join]"]
+        pub(crate) fn waitable_join(waitable: u32, set: u32);
+
+        #[link_name = "[waitable-set-drop]"]
+        pub(crate) fn waitable_set_drop(set: u32);
+
+        #[link_name = "[waitable-set-poll]"]
+        #[allow(dead_code)]
+        pub(crate) fn waitable_set_poll(set: u32, payload_addr: *mut u32) -> u32;
+
+        #[link_name = "[waitable-set-wait]"]
+        #[allow(dead_code)]
+        pub(crate) fn waitable_set_wait(set: u32, payload_addr: *mut u32) -> u32;
+
+        #[link_name = "[subtask-drop]"]
+        pub(crate) fn subtask_drop(task: u32);
+
+        #[link_name = "[subtask-cancel]"]
+        #[allow(dead_code)]
+        pub(crate) fn subtask_cancel(task: u32) -> u32;
+
+        #[link_name = "[context-get-0]"]
+        pub(crate) fn context_get() -> u32;
+
+        #[link_name = "[context-set-0]"]
+        pub(crate) fn context_set(value: u32);
+
+        #[link_name = "[thread-yield]"]
+        #[allow(dead_code)]
+        pub(crate) fn thread_yield() -> u32;
+    }
+
+    #[link(wasm_import_module = "[export]$root")]
+    unsafe extern "C" {
+        #[link_name = "[task-cancel]"]
+        #[allow(dead_code)]
+        pub(crate) fn task_cancel();
+
+        #[link_name = "[backpressure-set]"]
+        #[allow(dead_code)]
+        pub(crate) fn backpressure_set(enabled: u32);
+    }
 }
 
-#[link(wasm_import_module = "$root")]
-unsafe extern "C" {
-    #[link_name = "[waitable-join]"]
-    pub(crate) fn waitable_join(waitable: u32, set: u32);
+#[cfg(not(feature = "component-model-async"))]
+mod async_builtins {
+    #[cold]
+    fn async_disabled() -> ! {
+        panic!("component-model async is disabled in this runtime")
+    }
+
+    pub(crate) unsafe fn waitable_set_new() -> u32 {
+        async_disabled()
+    }
+
+    pub(crate) unsafe fn waitable_join(_waitable: u32, _set: u32) {
+        async_disabled()
+    }
+
+    pub(crate) unsafe fn waitable_set_drop(_set: u32) {
+        async_disabled()
+    }
+
+    pub(crate) unsafe fn waitable_set_poll(_set: u32, _payload_addr: *mut u32) -> u32 {
+        async_disabled()
+    }
+
+    pub(crate) unsafe fn waitable_set_wait(_set: u32, _payload_addr: *mut u32) -> u32 {
+        async_disabled()
+    }
+
+    pub(crate) unsafe fn subtask_drop(_task: u32) {
+        async_disabled()
+    }
+
+    pub(crate) unsafe fn subtask_cancel(_task: u32) -> u32 {
+        async_disabled()
+    }
+
+    pub(crate) unsafe fn context_get() -> u32 {
+        async_disabled()
+    }
+
+    pub(crate) unsafe fn context_set(_value: u32) {
+        async_disabled()
+    }
+
+    pub(crate) unsafe fn task_cancel() {
+        async_disabled()
+    }
+
+    pub(crate) unsafe fn thread_yield() -> u32 {
+        async_disabled()
+    }
+
+    pub(crate) unsafe fn backpressure_set(_enabled: u32) {
+        async_disabled()
+    }
 }
 
-#[link(wasm_import_module = "$root")]
-unsafe extern "C" {
-    #[link_name = "[waitable-set-drop]"]
-    pub(crate) fn waitable_set_drop(set: u32);
-}
-
-#[link(wasm_import_module = "$root")]
-unsafe extern "C" {
-    #[link_name = "[waitable-set-poll]"]
-    #[allow(dead_code)]
-    pub(crate) fn waitable_set_poll(set: u32, payload_addr: *mut u32) -> u32;
-}
-
-#[link(wasm_import_module = "$root")]
-unsafe extern "C" {
-    #[link_name = "[waitable-set-wait]"]
-    #[allow(dead_code)]
-    pub(crate) fn waitable_set_wait(set: u32, payload_addr: *mut u32) -> u32;
-}
-
-#[link(wasm_import_module = "$root")]
-unsafe extern "C" {
-    #[link_name = "[subtask-drop]"]
-    pub(crate) fn subtask_drop(task: u32);
-}
-
-#[link(wasm_import_module = "$root")]
-unsafe extern "C" {
-    #[link_name = "[subtask-cancel]"]
-    #[allow(dead_code)]
-    pub(crate) fn subtask_cancel(task: u32) -> u32;
-}
-
-#[link(wasm_import_module = "$root")]
-unsafe extern "C" {
-    #[link_name = "[context-get-0]"]
-    pub(crate) fn context_get() -> u32;
-}
-
-#[link(wasm_import_module = "$root")]
-unsafe extern "C" {
-    #[link_name = "[context-set-0]"]
-    pub(crate) fn context_set(value: u32);
-}
-
-#[link(wasm_import_module = "[export]$root")]
-unsafe extern "C" {
-    #[link_name = "[task-cancel]"]
-    #[allow(dead_code)]
-    pub(crate) fn task_cancel();
-}
-
-#[link(wasm_import_module = "$root")]
-unsafe extern "C" {
-    #[link_name = "[thread-yield]"]
-    #[allow(dead_code)]
-    pub(crate) fn thread_yield() -> u32;
-}
-
-#[link(wasm_import_module = "[export]$root")]
-unsafe extern "C" {
-    #[link_name = "[backpressure-set]"]
-    #[allow(dead_code)]
-    pub(crate) fn backpressure_set(enabled: u32);
-}
+pub(crate) use async_builtins::*;
 
 // WASI adapter state reset that is used during Wizer pre-initialization
 #[link(wasm_import_module = "wasi_snapshot_preview1")]

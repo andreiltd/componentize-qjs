@@ -2,8 +2,10 @@
 use std::collections::HashMap;
 
 use heck::{ToLowerCamelCase, ToUpperCamelCase};
-use rquickjs::function::{self, Rest};
-use rquickjs::{Ctx, Function, Persistent, Value};
+use rquickjs::Persistent;
+use rquickjs::function;
+use rquickjs::function::Rest;
+use rquickjs::{Ctx, Function, Value};
 use wit_dylib_ffi::Wit;
 
 use crate::CtxExt;

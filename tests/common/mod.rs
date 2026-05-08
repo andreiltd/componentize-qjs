@@ -31,8 +31,9 @@ pub fn engine() -> &'static Engine {
     static ENGINE: OnceLock<Engine> = OnceLock::new();
     ENGINE.get_or_init(|| {
         let mut config = Config::new();
-        config.wasm_component_model(true);
+        #[cfg(feature = "component-model-async")]
         config.wasm_component_model_async(true);
+        config.wasm_component_model(true);
         Engine::new(&config).expect("Failed to create engine")
     })
 }
