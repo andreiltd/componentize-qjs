@@ -59,7 +59,16 @@ fn main() -> Result<()> {
     // Check for pre-built runtime (used when installing from crates.io)
     let prebuilt = manifest_dir.join("prebuilt/runtime.wasm");
     let prebuilt_opt_size = manifest_dir.join("prebuilt/runtime-opt-size.wasm");
+
     if prebuilt.exists() {
+        if !component_model_async_enabled() {
+            bail!(
+                "Pre-built runtimes are packaged with component-model async support. \
+                 Build from source without prebuilt runtimes, or use a default-feature build and \
+                 pass a sync runtime with --runtime."
+            );
+        }
+
         if !prebuilt_opt_size.exists() {
             bail!(
                 "Pre-built default runtime exists at {} but opt-size runtime is missing at {}. \
@@ -68,11 +77,16 @@ fn main() -> Result<()> {
                 prebuilt_opt_size.display(),
             );
         }
-        eprintln!("Using pre-built runtime at: {}", prebuilt.display());
+
         eprintln!(
-            "Using pre-built opt-size runtime at: {}",
+            "Using prebuilt runtime (default) at: {}",
+            prebuilt.display()
+        );
+        eprintln!(
+            "Using prebuilt runtime (opt-size) at: {}",
             prebuilt_opt_size.display()
         );
+
         return emit_runtime_wasms(&prebuilt, &prebuilt_opt_size, &out_dir);
     }
 
@@ -168,6 +182,10 @@ fn build_runtime(out_dir: &Path, build: RuntimeBuild) -> Result<PathBuf> {
         cargo.arg("--release");
     }
 
+    if component_model_async_enabled() {
+        cargo.arg("--features").arg("component-model-async");
+    }
+
     eprintln!("Building {} runtime: {cargo:?}", build.name());
     let status = cargo.status().context("Failed to run cargo build")?;
     if !status.success() {
@@ -207,6 +225,10 @@ fn build_runtime(out_dir: &Path, build: RuntimeBuild) -> Result<PathBuf> {
     }
 
     Ok(runtime_dst)
+}
+
+fn component_model_async_enabled() -> bool {
+    env::var_os("CARGO_FEATURE_COMPONENT_MODEL_ASYNC").is_some()
 }
 
 fn get_wasi_sdk(out_dir: &Path) -> Result<PathBuf> {

@@ -440,6 +440,7 @@ mod fuzz {
     }
 }
 
+#[cfg(feature = "component-model-async")]
 mod fuzz_async {
     use super::common::AsyncComponentInstance;
     use super::*;

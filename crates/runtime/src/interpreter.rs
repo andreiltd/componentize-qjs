@@ -5,8 +5,8 @@ use crate::bindings::register;
 use crate::resources::ResourceTable;
 use crate::task::TaskState;
 use crate::trivia::{fn_lookup, iface_lookup};
-use crate::{QjsCallContext, abi, with_ctx};
-use crate::{futures, streams};
+use crate::{QjsCallContext, with_ctx};
+use crate::{abi, futures, streams};
 
 use heck::ToUpperCamelCase;
 use rquickjs::function::Constructor;

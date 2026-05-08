@@ -96,6 +96,10 @@ wasmtime run --wasm component-model-async=y --invoke 'greet("World")' hello.wasm
 # "Hello, World!"
 ```
 
+The built-in runtime published with componentize-qjs includes component-model
+async support. A custom runtime built without that Cargo feature can be passed
+with `--runtime` for sync-only components.
+
 ## CLI Reference
 
 ```

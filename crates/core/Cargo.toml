@@ -47,5 +47,6 @@ tar = "0.4"
 ureq = "3"
 
 [features]
-default = []
+default = ["component-model-async"]
 opt-size = []
+component-model-async = []

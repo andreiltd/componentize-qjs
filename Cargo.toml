@@ -12,8 +12,8 @@ repository = "https://github.com/andreiltd/componentize-qjs"
 homepage = "https://github.com/andreiltd/componentize-qjs"
 
 [workspace.dependencies]
-componentize-qjs = { path = "crates/core", version = "0.2.0" }
-componentize-qjs-cli = { path = ".", version = "0.2.0" }
+componentize-qjs = { path = "crates/core", version = "0.2.0", default-features = false }
+componentize-qjs-cli = { path = ".", version = "0.2.0", default-features = false }
 anyhow = "1.0"
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", default-features = false, features = ["rt", "macros"] }
@@ -53,8 +53,9 @@ oxc_parser = "0.129.0"
 oxc_span = "0.129.0"
 
 [features]
-default = []
+default = ["component-model-async"]
 opt-size = ["componentize-qjs/opt-size"]
+component-model-async = ["componentize-qjs/component-model-async"]
 
 [dev-dependencies]
 assert_cmd = "2.0"

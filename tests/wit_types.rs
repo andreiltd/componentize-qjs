@@ -5,6 +5,25 @@ use wasmtime::component::Val;
 
 use common::TestCase;
 
+#[cfg(not(feature = "component-model-async"))]
+#[test]
+fn test_sync_runtime_does_not_require_component_model_async() {
+    TestCase::new()
+        .wit(
+            r#"
+            package test:sync-only;
+            world sync-only {
+                export add: func(a: u32, b: u32) -> u32;
+            }
+        "#,
+        )
+        .script("export function add(a, b) { return a + b; }")
+        .expect_call("add", vec![Val::U32(2), Val::U32(3)], Val::U32(5))
+        .build()
+        .unwrap()
+        .run();
+}
+
 #[test]
 fn test_hello_world() {
     TestCase::new()

@@ -2,7 +2,8 @@ use crate::CtxExt;
 use crate::with_ctx;
 
 use heck::ToLowerCamelCase;
-use rquickjs::{Function, Object, Persistent, Result, Value, function::Rest};
+use rquickjs::{Function, Object, Persistent};
+use rquickjs::{Result, Value, function::Rest};
 
 /// Coerce closure lifetimes so the returned `Value<'js>` gets the same
 /// lifetime as the `Ctx<'js>` argument.

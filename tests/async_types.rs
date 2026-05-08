@@ -1,4 +1,5 @@
 //! Async component model tests for componentize-qjs.
+#![cfg(feature = "component-model-async")]
 
 mod common;
 

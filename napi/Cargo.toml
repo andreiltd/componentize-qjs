@@ -25,5 +25,12 @@ tokio.workspace = true
 napi-build = "2"
 
 [features]
-default = []
-opt-size = ["componentize-qjs/opt-size"]
+default = ["component-model-async"]
+opt-size = [
+    "componentize-qjs/opt-size",
+    "componentize-qjs-cli/opt-size"
+]
+component-model-async = [
+    "componentize-qjs/component-model-async",
+    "componentize-qjs-cli/component-model-async",
+]
