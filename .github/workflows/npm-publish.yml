@@ -1,8 +1,6 @@
 name: Publish npm packages
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       release_tag:
@@ -15,21 +13,17 @@ on:
         description: Release tag to build from
         required: true
         type: string
-    secrets:
-      NPM_TOKEN:
-        description: npm token for publishing packages
-        required: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: npm-publish-${{ inputs.release_tag || github.event.release.tag_name || github.ref_name }}
+  group: npm-publish-${{ inputs.release_tag || github.ref_name }}
   cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
-  RELEASE_TAG: ${{ inputs.release_tag || github.event.release.tag_name || github.ref_name }}
+  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
 jobs:
   build:
@@ -130,6 +124,7 @@ jobs:
     name: Publish to npm
     runs-on: ubuntu-latest
     needs: build
+    environment: npm
     permissions:
       contents: read
       id-token: write
@@ -144,6 +139,9 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+
+      - name: Ensure npm CLI supports trusted publishing
+        run: npm install -g npm@^11.5.1
 
       - name: Install npm dependencies
         working-directory: npm
@@ -176,16 +174,12 @@ jobs:
           npx napi artifacts --output-dir artifacts --npm-dir npm
           npx napi prepublish --skip-optional-publish --no-gh-release
 
+      - name: Stage README and LICENSE in npm packages
+        run: ${{ github.workspace }}/.github/scripts/stage-npm-assets.sh
+
       - name: Check npm package contents
         working-directory: npm
-        shell: bash
-        run: |
-          set -euo pipefail
-          for package_json in npm/*/package.json; do
-            package_dir="$(dirname "$package_json")"
-            (cd "$package_dir" && npm pack --dry-run)
-          done
-          npm pack --dry-run
+        run: ${{ github.workspace }}/.github/scripts/check-npm-packages.sh
 
       - name: Publish platform packages
         if: github.event_name != 'workflow_dispatch'
@@ -195,14 +189,10 @@ jobs:
           set -euo pipefail
           for package_json in npm/*/package.json; do
             package_dir="$(dirname "$package_json")"
-            (cd "$package_dir" && npm publish --provenance --access public)
+            (cd "$package_dir" && npm publish --access public)
           done
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish main package
         if: github.event_name != 'workflow_dispatch'
         working-directory: npm
-        run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
