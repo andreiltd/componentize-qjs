@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/andreiltd/componentize-qjs/compare/componentize-qjs-v0.2.0...componentize-qjs-v0.2.1) - 2026-05-12
+
+### Features
+
+- allow runtime builds without async support ([#19](https://github.com/andreiltd/componentize-qjs/pull/19))
+
+### Miscellaneous
+
+- *(ci)* enable trusted publishing ([#22](https://github.com/andreiltd/componentize-qjs/pull/22))
+- bump binaryen and wasi-sdk ([#20](https://github.com/andreiltd/componentize-qjs/pull/20))
+
 ## [0.2.0](https://github.com/andreiltd/componentize-qjs/compare/componentize-qjs-v0.1.0...componentize-qjs-v0.2.0) - 2026-05-05
 
 ### Bug Fixes
