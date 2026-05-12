@@ -54,7 +54,14 @@ Linux, macOS, and Windows.
 
 ### npm package
 
-The npm package is not yet published to the registry. To use it, build from source:
+```bash
+npm install componentize-qjs
+```
+
+This pulls in the right prebuilt native binding for your platform via the
+`@andreiltd/componentize-qjs-binding-*` optional dependencies.
+
+If you want to build from source run:
 
 ```bash
 cd npm && npm install && npm run build
@@ -353,15 +360,15 @@ Otherwise, call `.drop()` explicitly to release handles.
 
 ## Node.js API
 
-The npm package exposes both a CLI and a programmatic API. It is not yet
-published to the registry — see [Installation](#installation) for building from
-source.
+The npm package exposes both a CLI and a programmatic API.
 
 ### CLI
 
 ```bash
-./npm/bin/componentize-qjs --wit hello.wit --js hello.js -o hello.wasm
+npx componentize-qjs --wit hello.wit --js hello.js -o hello.wasm
 ```
+
+(Or, if you installed the package globally, just `componentize-qjs ...`.)
 
 ### Usage
 
