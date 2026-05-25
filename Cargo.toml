@@ -19,7 +19,7 @@ clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", default-features = false, features = ["rt", "macros"] }
 wasmtime = { version = "44", features = ["component-model", "async"] }
 wasmtime-wasi = { version = "44", features = ["p3"] }
-wit-parser = "0.249"
+wit-parser = "0.250"
 
 [package]
 name = "componentize-qjs-cli"
@@ -46,11 +46,11 @@ componentize-qjs.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true
-oxc_minifier = "0.131.0"
-oxc_allocator = "0.131.0"
-oxc_codegen = "0.131.0"
-oxc_parser = "0.131.0"
-oxc_span = "0.131.0"
+oxc_minifier = "0.132.0"
+oxc_allocator = "0.132.0"
+oxc_codegen = "0.132.0"
+oxc_parser = "0.132.0"
+oxc_span = "0.132.0"
 
 [features]
 default = ["component-model-async"]
