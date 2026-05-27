@@ -17,6 +17,34 @@ use rquickjs::{Ctx, Function, Object, Persistent, Value};
 
 use std::cell::Cell;
 
+macro_rules! copy_typed_array_as {
+    ($obj:expr, $ty:expr, $t:ty) => {{
+        let Some(ta) = $obj.as_typed_array::<$t>() else {
+            return Ok(None);
+        };
+
+        let slice: &[$t] = ta.as_ref();
+        let count = slice.len();
+
+        assert_eq!($ty.abi_payload_size(), std::mem::size_of::<$t>());
+        assert!($ty.abi_payload_align() >= std::mem::align_of::<$t>());
+
+        let byte_len = count
+            .checked_mul(std::mem::size_of::<$t>())
+            .ok_or_else(|| rquickjs::Error::new_from_js("number", "buffer size overflow"))?;
+
+        let buf = BufferGuard::new_zeroed(byte_len, $ty.abi_payload_align());
+        if byte_len > 0 {
+            unsafe {
+                let src = slice.as_ptr() as *const u8;
+                let dst = buf.ptr();
+                std::ptr::copy_nonoverlapping(src, dst, byte_len);
+            }
+        }
+        Some((buf, count))
+    }};
+}
+
 /// Rust side state for the readable end of a component-model stream.
 #[derive(Trace, JsLifetime)]
 pub(crate) struct StreamReadable {
@@ -137,6 +165,36 @@ pub(crate) fn make_stream<'js>(
     Ok(result.into_value())
 }
 
+/// Fast path for `writable.write(typedArray)`
+fn try_typed_array_to_buffer<'js>(
+    data: &Value<'js>,
+    ty: &wit_dylib_ffi::Stream,
+) -> rquickjs::Result<Option<(BufferGuard, usize)>> {
+    let Some(elem_ty) = ty.ty() else {
+        return Ok(None);
+    };
+
+    let Some(obj) = data.as_object() else {
+        return Ok(None);
+    };
+
+    let pair = match elem_ty {
+        wit_dylib_ffi::Type::U8 => copy_typed_array_as!(obj, ty, u8),
+        wit_dylib_ffi::Type::S8 => copy_typed_array_as!(obj, ty, i8),
+        wit_dylib_ffi::Type::U16 => copy_typed_array_as!(obj, ty, u16),
+        wit_dylib_ffi::Type::S16 => copy_typed_array_as!(obj, ty, i16),
+        wit_dylib_ffi::Type::U32 => copy_typed_array_as!(obj, ty, u32),
+        wit_dylib_ffi::Type::S32 => copy_typed_array_as!(obj, ty, i32),
+        wit_dylib_ffi::Type::U64 => copy_typed_array_as!(obj, ty, u64),
+        wit_dylib_ffi::Type::S64 => copy_typed_array_as!(obj, ty, i64),
+        wit_dylib_ffi::Type::F32 => copy_typed_array_as!(obj, ty, f32),
+        wit_dylib_ffi::Type::F64 => copy_typed_array_as!(obj, ty, f64),
+        _ => return Ok(None),
+    };
+
+    Ok(pair)
+}
+
 fn stream_read<'js>(
     this: This<Class<'js, StreamReadable>>,
     ctx: Ctx<'js>,
@@ -245,7 +303,9 @@ fn stream_write<'js>(
     let ty = ctx.wit().stream(type_index as usize);
 
     let mut call = QjsCallContext::default();
-    let (buffer, write_count) = if let Some(arr) = data.as_array() {
+    let (buffer, write_count) = if let Some(pair) = try_typed_array_to_buffer(&data, &ty)? {
+        pair
+    } else if let Some(arr) = data.as_array() {
         let count = arr.len();
         let buf_size = ty
             .abi_payload_size()
