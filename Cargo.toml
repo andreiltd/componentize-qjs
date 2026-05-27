@@ -32,6 +32,17 @@ repository.workspace = true
 homepage.workspace = true
 readme = "README.md"
 
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/componentize-qjs-v{ version }-{ target }.{ archive-format }"
+bin-dir = "componentize-qjs-v{ version }-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
+[package.metadata.binstall.overrides.aarch64-pc-windows-msvc]
+pkg-fmt = "zip"
+
 [lib]
 name = "componentize_qjs_cli"
 path = "src/lib.rs"
