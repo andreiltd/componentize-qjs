@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2](https://github.com/andreiltd/componentize-qjs/compare/v0.2.1...v0.2.2) - 2026-05-27
+
+### Bug Fixes
+
+- add cargo binstall metadata ([#29](https://github.com/andreiltd/componentize-qjs/pull/29))
+- accept typed arrays in writable.write() ([#28](https://github.com/andreiltd/componentize-qjs/pull/28))
+- *(deps)* update rust dependencies ([#27](https://github.com/andreiltd/componentize-qjs/pull/27))
+- *(deps)* update rust dependencies ([#25](https://github.com/andreiltd/componentize-qjs/pull/25))
+
+### Miscellaneous
+
+- *(deps)* update github ci dependencies ([#24](https://github.com/andreiltd/componentize-qjs/pull/24))
+- *(deps)* update dependency vitest to v4.1.6 ([#23](https://github.com/andreiltd/componentize-qjs/pull/23))
+
 ## [0.2.1](https://github.com/andreiltd/componentize-qjs/compare/v0.2.0...v0.2.1) - 2026-05-12
 
 ### Features
