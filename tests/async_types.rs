@@ -990,6 +990,161 @@ async fn test_stream_build_with_input_output() {
 }
 
 #[tokio::test]
+async fn test_stream_write_uint8_array() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:stream-typed;
+            world stream-typed {
+                export round-trip-u8: async func(input: stream<u8>) -> list<u8>;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            export async function roundTripU8(input) {
+                input.drop();
+                const { readable, writable } = wit.Stream();
+                const readPromise = readable.read(1024);
+                await writable.write(new Uint8Array([97, 98, 99, 0, 255]));
+                writable.drop();
+                const data = await readPromise;
+                readable.drop();
+                return Array.from(data);
+            }
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    let (inst, store) = instance.parts();
+    let reader = StreamReader::new(&mut *store, ByteProducer::new(vec![])).unwrap();
+    let func = inst
+        .get_typed_func::<(StreamReader<u8>,), (Vec<u8>,)>(&mut *store, "round-trip-u8")
+        .unwrap();
+    let (bytes,) = func.call_async(&mut *store, (reader,)).await.unwrap();
+    assert_eq!(bytes, vec![97, 98, 99, 0, 255]);
+}
+
+#[tokio::test]
+async fn test_stream_write_uint32_array() {
+    // Verify the typed-array fast path handles wider primitive element types
+    // (Uint32Array → stream<u32>): element-count semantics, not byte count.
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:stream-typed-u32;
+            world stream-typed-u32 {
+                export round-trip-u32: async func(input: stream<u32>) -> list<u32>;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            export async function roundTripU32(input) {
+                input.drop();
+                const { readable, writable } = wit.Stream();
+                const readPromise = readable.read(1024);
+                await writable.write(new Uint32Array([1, 2, 3, 4294967295]));
+                writable.drop();
+                const data = await readPromise;
+                readable.drop();
+                return Array.from(data);
+            }
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    let (inst, store) = instance.parts();
+    let reader = StreamReader::new(&mut *store, EmptyProducer::<u32>::new()).unwrap();
+    let func = inst
+        .get_typed_func::<(StreamReader<u32>,), (Vec<u32>,)>(&mut *store, "round-trip-u32")
+        .unwrap();
+    let (values,) = func.call_async(&mut *store, (reader,)).await.unwrap();
+    assert_eq!(values, vec![1, 2, 3, 4_294_967_295]);
+}
+
+#[tokio::test]
+async fn test_stream_write_int32_array() {
+    // Verify the signed flavor (Int32Array → stream<s32>).
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:stream-typed-s32;
+            world stream-typed-s32 {
+                export round-trip-s32: async func(input: stream<s32>) -> list<s32>;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            export async function roundTripS32(input) {
+                input.drop();
+                const { readable, writable } = wit.Stream();
+                const readPromise = readable.read(1024);
+                await writable.write(new Int32Array([-2147483648, -1, 0, 1, 2147483647]));
+                writable.drop();
+                const data = await readPromise;
+                readable.drop();
+                return Array.from(data);
+            }
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    let (inst, store) = instance.parts();
+    let reader = StreamReader::new(&mut *store, EmptyProducer::<i32>::new()).unwrap();
+    let func = inst
+        .get_typed_func::<(StreamReader<i32>,), (Vec<i32>,)>(&mut *store, "round-trip-s32")
+        .unwrap();
+    let (values,) = func.call_async(&mut *store, (reader,)).await.unwrap();
+    assert_eq!(values, vec![-2_147_483_648, -1, 0, 1, 2_147_483_647]);
+}
+
+#[tokio::test]
+async fn test_stream_write_plain_array_still_works() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:stream-typed;
+            world stream-typed {
+                export round-trip-array: async func(input: stream<u8>) -> list<u8>;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            export async function roundTripArray(input) {
+                input.drop();
+                const { readable, writable } = wit.Stream();
+                const readPromise = readable.read(1024);
+                await writable.write([10, 20, 30]);
+                writable.drop();
+                const data = await readPromise;
+                readable.drop();
+                return Array.from(data);
+            }
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    let (inst, store) = instance.parts();
+    let reader = StreamReader::new(&mut *store, ByteProducer::new(vec![])).unwrap();
+    let func = inst
+        .get_typed_func::<(StreamReader<u8>,), (Vec<u8>,)>(&mut *store, "round-trip-array")
+        .unwrap();
+    let (bytes,) = func.call_async(&mut *store, (reader,)).await.unwrap();
+    assert_eq!(bytes, vec![10, 20, 30]);
+}
+
+#[tokio::test]
 async fn test_future_create_and_return_u32() {
     let mut instance = TestCase::new()
         .wit(
@@ -1284,6 +1439,31 @@ async fn test_async_variant_mixed_payloads() {
             assert_eq!(**val.as_ref().unwrap(), Val::U32(42));
         }
         other => panic!("expected Variant, got {:?}", other),
+    }
+}
+
+/// A StreamProducer that yields nothing and closes immediately.
+/// Useful for tests that need a closed input stream of any element type.
+struct EmptyProducer<T>(std::marker::PhantomData<T>);
+
+impl<T> EmptyProducer<T> {
+    fn new() -> Self {
+        Self(std::marker::PhantomData)
+    }
+}
+
+impl<T: Send + Sync + 'static> StreamProducer<WasiCtxState> for EmptyProducer<T> {
+    type Item = T;
+    type Buffer = VecBuffer<T>;
+
+    fn poll_produce<'a>(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        _store: StoreContextMut<'a, WasiCtxState>,
+        _destination: Destination<'a, Self::Item, Self::Buffer>,
+        _finish: bool,
+    ) -> Poll<wasmtime::Result<StreamResult>> {
+        Poll::Ready(Ok(StreamResult::Dropped))
     }
 }
 
