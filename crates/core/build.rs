@@ -142,8 +142,8 @@ fn build_runtime(out_dir: &Path, build: RuntimeBuild) -> Result<PathBuf> {
     let optimize_size = build.optimize_size();
     let is_release = profile == "release";
 
-    // Link libc statically into the shared wasm module
-    let flags = "-Clink-arg=-shared -Clink-arg=-Wl,--no-entry";
+    // Link libc statically into the shared wasm module.
+    let flags = "-Clink-arg=-shared -Clink-arg=-Wl,--no-entry -Clink-arg=-Wl,--allow-undefined";
     let rustflags = match (is_release, optimize_size) {
         (true, true) => format!("{flags} -Clto=fat -Copt-level=z"),
         (true, false) => format!("{flags} -Clto=fat -Copt-level=3"),
