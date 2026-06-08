@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 
 use heck::{ToLowerCamelCase, ToUpperCamelCase};
-use rquickjs::loader::{Loader, Resolver};
+use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::module::Declared;
 use rquickjs::module::{Declarations, Exports, ModuleDef};
 use rquickjs::{Ctx, Error, Module};
@@ -11,18 +11,6 @@ use wit_dylib_ffi::Wit;
 
 use crate::wit_imports::{WitInterface, partition_imports};
 use crate::{CtxExt, bindings, with_ctx};
-
-// TODO(tandr): remove when rquickjs 0.12 is released
-const _: () = {
-    assert!(
-        core::mem::size_of::<Module<'static>>() == core::mem::size_of::<Exports<'static>>(),
-        "Module and Exports must have the same size"
-    );
-    assert!(
-        core::mem::align_of::<Module<'static>>() == core::mem::align_of::<Exports<'static>>(),
-        "Module and Exports must have the same alignment"
-    );
-};
 
 /// Transient state used while declaring native WIT import modules.
 #[derive(Default, rquickjs::JsLifetime)]
@@ -48,7 +36,13 @@ impl WitImportDeclarations {
 pub(super) struct WitModuleResolver;
 
 impl Resolver for WitModuleResolver {
-    fn resolve<'js>(&mut self, ctx: &Ctx<'js>, base: &str, name: &str) -> rquickjs::Result<String> {
+    fn resolve<'js>(
+        &mut self,
+        ctx: &Ctx<'js>,
+        base: &str,
+        name: &str,
+        _attributes: Option<ImportAttributes<'js>>,
+    ) -> rquickjs::Result<String> {
         if has_import_module(ctx.wit(), name) {
             Ok(name.to_string())
         } else {
@@ -60,7 +54,12 @@ impl Resolver for WitModuleResolver {
 pub(super) struct WitModuleLoader;
 
 impl Loader for WitModuleLoader {
-    fn load<'js>(&mut self, ctx: &Ctx<'js>, name: &str) -> rquickjs::Result<Module<'js, Declared>> {
+    fn load<'js>(
+        &mut self,
+        ctx: &Ctx<'js>,
+        name: &str,
+        _attributes: Option<ImportAttributes<'js>>,
+    ) -> rquickjs::Result<Module<'js, Declared>> {
         let iface = find_import_interface(ctx.wit(), name)
             .ok_or_else(|| Error::new_loading_message(name, "WIT import not found"))?;
 
@@ -85,7 +84,7 @@ impl ModuleDef for WitImportModule {
     }
 
     fn evaluate<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> rquickjs::Result<()> {
-        let module_name = module_name_from_exports(exports)?;
+        let module_name: String = exports.module().name()?;
         let iface = find_import_interface(ctx.wit(), &module_name)
             .ok_or_else(|| Error::new_loading_message(module_name, "WIT import not found"))?;
 
@@ -141,14 +140,6 @@ fn declare_import_module<'js>(
 
     let _guard = DeclaredExportsGuard { ctx: ctx.clone() };
     Module::declare_def::<WitImportModule, _>(ctx.clone(), name)
-}
-
-fn module_name_from_exports<'js>(exports: &Exports<'js>) -> rquickjs::Result<String> {
-    // SAFETY: rquickjs exposes `Exports` as a newtype around `Module`; the
-    // size/alignment assertions above guard this assumption until rquickjs
-    // exposes module names directly to `ModuleDef`.
-    let module: &Module<'js> = unsafe { core::mem::transmute(exports) };
-    module.name()
 }
 
 fn export_names(iface: &WitInterface) -> Vec<String> {
