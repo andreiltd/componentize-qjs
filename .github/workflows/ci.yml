@@ -33,6 +33,9 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
+      - name: Setup runtime wasm cache
+        uses: ./.github/actions/setup-runtime-cache
+
       - name: Check formatting
         run: cargo fmt --check
 
@@ -68,6 +71,9 @@ jobs:
         run: |
           echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
           echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+
+      - name: Setup runtime wasm cache
+        uses: ./.github/actions/setup-runtime-cache
 
       - name: Build
         run: cargo build
@@ -105,6 +111,9 @@ jobs:
         run: |
           echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
           echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+
+      - name: Setup runtime wasm cache
+        uses: ./.github/actions/setup-runtime-cache
 
       - name: Install npm dependencies
         working-directory: npm
