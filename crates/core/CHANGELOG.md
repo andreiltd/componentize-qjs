@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/andreiltd/componentize-qjs/compare/componentize-qjs-v0.2.2...componentize-qjs-v0.3.0) - 2026-06-09
+
+### Bug Fixes
+
+- *(deps)* update rust dependencies to v45 ([#35](https://github.com/andreiltd/componentize-qjs/pull/35))
+- *(deps)* update rust dependencies ([#34](https://github.com/andreiltd/componentize-qjs/pull/34))
+- address regression in 1.96 toolchain ([#36](https://github.com/andreiltd/componentize-qjs/pull/36))
+
+### Features
+
+- publish runtime built without async component model ([#37](https://github.com/andreiltd/componentize-qjs/pull/37))
+
 ## [0.2.2](https://github.com/andreiltd/componentize-qjs/compare/componentize-qjs-v0.2.1...componentize-qjs-v0.2.2) - 2026-05-27
 
 ### Bug Fixes
