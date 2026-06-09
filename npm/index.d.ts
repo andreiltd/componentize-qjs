@@ -22,6 +22,11 @@ export interface ComponentizeOpts {
   disableGc?: boolean
   /** Use the built-in runtime optimized for smaller generated components */
   optSize?: boolean
+  /**
+   * Use the built-in non-async runtime, producing components that do not use
+   * the component-model async ABI
+   */
+  sync?: boolean
   /** Path to a custom QuickJS runtime Wasm module */
   runtime?: string
   /** Custom QuickJS runtime Wasm bytes */

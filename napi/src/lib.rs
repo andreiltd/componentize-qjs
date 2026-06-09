@@ -19,6 +19,9 @@ pub struct ComponentizeOpts {
     pub disable_gc: Option<bool>,
     /// Use the built-in runtime optimized for smaller generated components
     pub opt_size: Option<bool>,
+    /// Use the built-in non-async runtime, producing components that do not use
+    /// the component-model async ABI
+    pub sync: Option<bool>,
     /// Path to a custom QuickJS runtime Wasm module
     pub runtime: Option<String>,
     /// Custom QuickJS runtime Wasm bytes
@@ -47,18 +50,20 @@ pub async fn componentize(opts: ComponentizeOpts) -> Result<ComponentizeResult> 
         ));
     }
 
-    let runtime_sources = [
-        opts.opt_size.unwrap_or(false),
-        opts.runtime.is_some(),
-        opts.runtime_bytes.is_some(),
-    ]
-    .into_iter()
-    .filter(|provided| *provided)
-    .count();
-    if runtime_sources > 1 {
+    let opt_size = opts.opt_size.unwrap_or(false);
+    let sync = opts.sync.unwrap_or(false);
+
+    if opts.runtime.is_some() && opts.runtime_bytes.is_some() {
         return Err(Error::new(
             Status::InvalidArg,
-            "Use only one of optSize, runtime, or runtimeBytes".to_string(),
+            "Use only one of runtime or runtimeBytes".to_string(),
+        ));
+    }
+    let custom_provided = opts.runtime.is_some() || opts.runtime_bytes.is_some();
+    if custom_provided && (opt_size || sync) {
+        return Err(Error::new(
+            Status::InvalidArg,
+            "optSize and sync cannot be combined with a custom runtime".to_string(),
         ));
     }
 
@@ -82,8 +87,12 @@ pub async fn componentize(opts: ComponentizeOpts) -> Result<ComponentizeResult> 
     };
     let runtime = match custom_runtime.as_deref() {
         Some(wasm) => componentize_qjs::Runtime::Custom(wasm),
-        None if opts.opt_size.unwrap_or(false) => componentize_qjs::Runtime::OptSize,
-        None => componentize_qjs::Runtime::default(),
+        None => match (sync, opt_size) {
+            (true, true) => componentize_qjs::Runtime::OptSizeSync,
+            (true, false) => componentize_qjs::Runtime::DefaultSync,
+            (false, true) => componentize_qjs::Runtime::OptSize,
+            (false, false) => componentize_qjs::Runtime::default(),
+        },
     };
 
     let opts = componentize_qjs::ComponentizeOpts {

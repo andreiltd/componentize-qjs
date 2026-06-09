@@ -17,6 +17,7 @@ fn test_cli_help() {
         .success()
         .stdout(predicate::str::contains("Usage: componentize-qjs"))
         .stdout(predicate::str::contains("--opt-size"))
+        .stdout(predicate::str::contains("--sync"))
         .stdout(predicate::str::contains("--runtime <PATH>"));
 }
 
@@ -103,6 +104,36 @@ fn test_cli_opt_size_runtime() {
     let wasm = fs::read(&output).unwrap();
     let mut inst = ComponentInstance::from_wasm(wasm, vec![], vec![])
         .expect("should instantiate opt-size runtime component");
+
+    assert_eq!(inst.call1("add", &[Val::U32(3), Val::U32(4)]), Val::U32(7));
+}
+
+#[test]
+fn test_cli_sync_runtime() {
+    let (output, _dir) = run_cli_build(
+        "package test:runtime;\nworld runtime { export add: func(a: u32, b: u32) -> u32; }",
+        "export function add(a, b) { return a + b; }",
+        &["--sync"],
+    );
+
+    let wasm = fs::read(&output).unwrap();
+    let mut inst = ComponentInstance::from_wasm(wasm, vec![], vec![])
+        .expect("should instantiate non-async runtime component");
+
+    assert_eq!(inst.call1("add", &[Val::U32(3), Val::U32(4)]), Val::U32(7));
+}
+
+#[test]
+fn test_cli_sync_opt_size_runtime() {
+    let (output, _dir) = run_cli_build(
+        "package test:runtime;\nworld runtime { export add: func(a: u32, b: u32) -> u32; }",
+        "export function add(a, b) { return a + b; }",
+        &["--sync", "--opt-size"],
+    );
+
+    let wasm = fs::read(&output).unwrap();
+    let mut inst = ComponentInstance::from_wasm(wasm, vec![], vec![])
+        .expect("should instantiate non-async opt-size runtime component");
 
     assert_eq!(inst.call1("add", &[Val::U32(3), Val::U32(4)]), Val::U32(7));
 }

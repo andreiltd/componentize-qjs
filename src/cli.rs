@@ -49,6 +49,11 @@ pub struct CliArgs {
     #[arg(long, conflicts_with = "runtime")]
     pub opt_size: bool,
 
+    /// Use the built-in non-async runtime, producing components that do not use
+    /// the component-model async ABI
+    #[arg(long, conflicts_with = "runtime")]
+    pub sync: bool,
+
     /// Path to a custom QuickJS runtime Wasm module
     #[arg(long, value_name = "PATH")]
     pub runtime: Option<std::path::PathBuf>,
@@ -107,8 +112,12 @@ pub async fn run(args: Vec<String>) -> Result<()> {
 
     let runtime = match &args.runtime {
         Some(file) => Runtime::Custom(&fs::read(file)?),
-        None if args.opt_size => Runtime::OptSize,
-        None => Runtime::default(),
+        None => match (args.sync, args.opt_size) {
+            (true, true) => Runtime::OptSizeSync,
+            (true, false) => Runtime::DefaultSync,
+            (false, true) => Runtime::OptSize,
+            (false, false) => Runtime::default(),
+        },
     };
 
     if args.stub_wasi {

@@ -104,8 +104,9 @@ wasmtime run --wasm component-model-async=y --invoke 'greet("World")' hello.wasm
 ```
 
 The built-in runtime published with componentize-qjs includes component-model
-async support. A custom runtime built without that Cargo feature can be passed
-with `--runtime` for sync-only components.
+async support. Pass `--sync` to embed the built-in non-async runtime instead,
+producing components that run on hosts without component-model async support. A
+custom runtime can also be supplied with `--runtime`.
 
 ## CLI Reference
 
@@ -122,12 +123,14 @@ componentize-qjs [OPTIONS] --wit <WIT> --js <JS>
 | `--stub-wasi` | | Replace all WASI imports with trap stubs |
 | `--minify` | `-m` | Minify JS source before embedding |
 | `--opt-size` | | Use the built-in QuickJS runtime optimized for size |
+| `--sync` | | Use the built-in non-async runtime (combine with `--opt-size` for the non-async opt-size runtime) |
 | `--runtime <PATH>` | | Custom QuickJS runtime Wasm module to embed |
 
 ### Cargo features
 
 | Feature | Effect |
 |---|---|
+| `component-model-async` | (default) Embed the component-model async runtime as the default built-in. The non-async runtime is always embedded and selectable via `--sync`. Disable to build a smaller binary with only the non-async runtime |
 | `opt-size` | Selects the bundled opt-size runtime when no runtime option is provided by the CLI or npm API |
 
 Build with features:
@@ -383,7 +386,10 @@ const { component } = await componentize({
 // component is a Buffer containing the WebAssembly component bytes
 ```
 
-Runtime selection is available through `optSize`, `runtime`, or `runtimeBytes`; provide only one of those options. The `runtime` option is a path to a custom QuickJS runtime Wasm module.
+Runtime selection is available through `optSize`, `sync`, `runtime`, or
+`runtimeBytes`. `optSize` and `sync` may be combined to select the non-async
+opt-size runtime, but neither can be combined with a custom `runtime`/`runtimeBytes`.
+The `runtime` option is a path to a custom QuickJS runtime Wasm module.
 
 ## Acknowledgments
 

@@ -48,7 +48,9 @@ jobs:
             target/release-plz-package \
             crates/core/prebuilt \
             runtime.wasm=runtime.wasm \
-            runtime-opt-size.wasm=runtime-opt-size.wasm
+            runtime-opt-size.wasm=runtime-opt-size.wasm \
+            runtime-sync.wasm=runtime-sync.wasm \
+            runtime-opt-size-sync.wasm=runtime-opt-size-sync.wasm
 
       - name: Authenticate with crates.io
         id: crates_io_auth

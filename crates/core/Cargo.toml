@@ -19,6 +19,12 @@ include = [
     "prebuilt/runtime-opt-size.wasm",
     "prebuilt/runtime-opt-size.wasm.cdx.json",
     "prebuilt/runtime-opt-size.wasm.sha256",
+    "prebuilt/runtime-sync.wasm",
+    "prebuilt/runtime-sync.wasm.cdx.json",
+    "prebuilt/runtime-sync.wasm.sha256",
+    "prebuilt/runtime-opt-size-sync.wasm",
+    "prebuilt/runtime-opt-size-sync.wasm.cdx.json",
+    "prebuilt/runtime-opt-size-sync.wasm.sha256",
 ]
 
 [lib]

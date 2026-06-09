@@ -15,29 +15,68 @@ const RUNTIME_AUDITABLE_ENV: &str = "COMPONENTIZE_QJS_RUNTIME_AUDITABLE";
 const MAX_ARCHIVE_BYTES: u64 = 1_000_000_000;
 
 #[derive(Clone, Copy)]
-enum RuntimeBuild {
-    Default,
-    OptSize,
+struct RuntimeBuild {
+    optimize_size: bool,
+    async_support: bool,
 }
 
 impl RuntimeBuild {
+    const DEFAULT: Self = Self {
+        optimize_size: false,
+        async_support: true,
+    };
+    const OPT_SIZE: Self = Self {
+        optimize_size: true,
+        async_support: true,
+    };
+    const DEFAULT_SYNC: Self = Self {
+        optimize_size: false,
+        async_support: false,
+    };
+    const OPT_SIZE_SYNC: Self = Self {
+        optimize_size: true,
+        async_support: false,
+    };
+
     fn name(self) -> &'static str {
-        match self {
-            Self::Default => "default",
-            Self::OptSize => "opt-size",
+        match (self.optimize_size, self.async_support) {
+            (false, true) => "default",
+            (true, true) => "opt-size",
+            (false, false) => "default-sync",
+            (true, false) => "opt-size-sync",
         }
     }
 
     fn filename(self) -> &'static str {
-        match self {
-            Self::Default => "runtime.wasm",
-            Self::OptSize => "runtime-opt-size.wasm",
+        match (self.optimize_size, self.async_support) {
+            (false, true) => "runtime.wasm",
+            (true, true) => "runtime-opt-size.wasm",
+            (false, false) => "runtime-sync.wasm",
+            (true, false) => "runtime-opt-size-sync.wasm",
         }
     }
 
     fn optimize_size(self) -> bool {
-        matches!(self, Self::OptSize)
+        self.optimize_size
     }
+
+    fn async_support(self) -> bool {
+        self.async_support
+    }
+}
+
+/// Resolved Wasm paths for each embedded runtime variant.
+///
+/// The non-async variants are always present. The async variants are `None`
+/// when the `component-model-async` feature is disabled, in which case the
+/// generated `DEFAULT_RUNTIME_WASM` / `OPT_SIZE_RUNTIME_WASM` constants alias
+/// the non-async variants (preserving the historical non-async-by-default
+/// behavior).
+struct RuntimePaths {
+    default_sync: PathBuf,
+    opt_size_sync: PathBuf,
+    default_async: Option<PathBuf>,
+    opt_size_async: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -52,42 +91,19 @@ fn main() -> Result<()> {
     );
     println!("cargo:rerun-if-changed=prebuilt/runtime.wasm");
     println!("cargo:rerun-if-changed=prebuilt/runtime-opt-size.wasm");
+    println!("cargo:rerun-if-changed=prebuilt/runtime-sync.wasm");
+    println!("cargo:rerun-if-changed=prebuilt/runtime-opt-size-sync.wasm");
     println!("cargo:rerun-if-env-changed={RUNTIME_AUDITABLE_ENV}");
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").context("OUT_DIR not set")?);
+    let async_on = component_model_async_enabled();
 
-    // Check for pre-built runtime (used when installing from crates.io)
-    let prebuilt = manifest_dir.join("prebuilt/runtime.wasm");
-    let prebuilt_opt_size = manifest_dir.join("prebuilt/runtime-opt-size.wasm");
+    // Check for pre-built runtimes (used when installing from crates.io)
+    let prebuilt_dir = manifest_dir.join("prebuilt");
+    let prebuilt_sync = prebuilt_dir.join("runtime-sync.wasm");
 
-    if prebuilt.exists() {
-        if !component_model_async_enabled() {
-            bail!(
-                "Pre-built runtimes are packaged with component-model async support. \
-                 Build from source without prebuilt runtimes, or use a default-feature build and \
-                 pass a sync runtime with --runtime."
-            );
-        }
-
-        if !prebuilt_opt_size.exists() {
-            bail!(
-                "Pre-built default runtime exists at {} but opt-size runtime is missing at {}. \
-                 If installing from crates.io, this is a packaging bug.",
-                prebuilt.display(),
-                prebuilt_opt_size.display(),
-            );
-        }
-
-        eprintln!(
-            "Using prebuilt runtime (default) at: {}",
-            prebuilt.display()
-        );
-        eprintln!(
-            "Using prebuilt runtime (opt-size) at: {}",
-            prebuilt_opt_size.display()
-        );
-
-        return emit_runtime_wasms(&prebuilt, &prebuilt_opt_size, &out_dir);
+    if prebuilt_sync.exists() {
+        return emit_from_prebuilt(&prebuilt_dir, async_on, &out_dir);
     }
 
     // Check that runtime source is available (won't be when installed from crates.io
@@ -98,36 +114,106 @@ fn main() -> Result<()> {
             "Runtime source not found at {} and no pre-built runtime at {}. \
              If installing from crates.io, this is a packaging bug.",
             runtime_src_dir.display(),
-            prebuilt.display(),
+            prebuilt_sync.display(),
         );
     }
 
-    let runtime_wasm = build_runtime(&out_dir, RuntimeBuild::Default)?;
-    let opt_size_runtime_wasm = build_runtime(&out_dir, RuntimeBuild::OptSize)?;
-    emit_runtime_wasms(&runtime_wasm, &opt_size_runtime_wasm, &out_dir)
+    // Non-async runtimes are always embedded; async runtimes only when the feature is on.
+    let default_sync = build_runtime(&out_dir, RuntimeBuild::DEFAULT_SYNC)?;
+    let opt_size_sync = build_runtime(&out_dir, RuntimeBuild::OPT_SIZE_SYNC)?;
+    let (default_async, opt_size_async) = if async_on {
+        (
+            Some(build_runtime(&out_dir, RuntimeBuild::DEFAULT)?),
+            Some(build_runtime(&out_dir, RuntimeBuild::OPT_SIZE)?),
+        )
+    } else {
+        (None, None)
+    };
+
+    emit_runtime_wasms(
+        &RuntimePaths {
+            default_sync,
+            opt_size_sync,
+            default_async,
+            opt_size_async,
+        },
+        &out_dir,
+    )
 }
 
-fn emit_runtime_wasms(
-    runtime_wasm: &Path,
-    opt_size_runtime_wasm: &Path,
-    out_dir: &Path,
-) -> Result<()> {
-    println!(
-        "cargo:rustc-env=RUNTIME_WASM_PATH={}",
-        runtime_wasm.display()
-    );
-    println!(
-        "cargo:rustc-env=RUNTIME_OPT_SIZE_WASM_PATH={}",
-        opt_size_runtime_wasm.display()
-    );
+/// Emit runtime constants from the pre-built runtimes packaged with the crate.
+fn emit_from_prebuilt(prebuilt_dir: &Path, async_on: bool, out_dir: &Path) -> Result<()> {
+    let default_sync = prebuilt_dir.join("runtime-sync.wasm");
+    let opt_size_sync = prebuilt_dir.join("runtime-opt-size-sync.wasm");
 
-    let output = format!(
-        r#"const DEFAULT_RUNTIME_WASM: &[u8] = include_bytes!({runtime_wasm:?});
-           const OPT_SIZE_RUNTIME_WASM: &[u8] = include_bytes!({opt_size_runtime_wasm:?});"#,
-    );
+    if !opt_size_sync.exists() {
+        bail!(
+            "Pre-built non-async runtime exists at {} but opt-size non-async runtime is missing \
+             at {}. If installing from crates.io, this is a packaging bug.",
+            default_sync.display(),
+            opt_size_sync.display(),
+        );
+    }
+
+    let (default_async, opt_size_async) = if async_on {
+        let default_async = prebuilt_dir.join("runtime.wasm");
+        let opt_size_async = prebuilt_dir.join("runtime-opt-size.wasm");
+        if !default_async.exists() || !opt_size_async.exists() {
+            bail!(
+                "Pre-built async runtimes are missing at {} / {} while the \
+                 component-model-async feature is enabled. If installing from crates.io, \
+                 this is a packaging bug.",
+                default_async.display(),
+                opt_size_async.display(),
+            );
+        }
+        (Some(default_async), Some(opt_size_async))
+    } else {
+        (None, None)
+    };
+
+    eprintln!("Using prebuilt runtimes from: {}", prebuilt_dir.display());
+
+    emit_runtime_wasms(
+        &RuntimePaths {
+            default_sync,
+            opt_size_sync,
+            default_async,
+            opt_size_async,
+        },
+        out_dir,
+    )
+}
+
+fn emit_runtime_wasms(paths: &RuntimePaths, out_dir: &Path) -> Result<()> {
+    let mut output = String::new();
+    output.push_str(&const_line(
+        "DEFAULT_SYNC_RUNTIME_WASM",
+        &paths.default_sync,
+    ));
+    output.push_str(&const_line(
+        "OPT_SIZE_SYNC_RUNTIME_WASM",
+        &paths.opt_size_sync,
+    ));
+
+    match &paths.default_async {
+        Some(path) => output.push_str(&const_line("DEFAULT_RUNTIME_WASM", path)),
+        None => output.push_str("const DEFAULT_RUNTIME_WASM: &[u8] = DEFAULT_SYNC_RUNTIME_WASM;\n"),
+    }
+    match &paths.opt_size_async {
+        Some(path) => output.push_str(&const_line("OPT_SIZE_RUNTIME_WASM", path)),
+        None => {
+            output.push_str("const OPT_SIZE_RUNTIME_WASM: &[u8] = OPT_SIZE_SYNC_RUNTIME_WASM;\n")
+        }
+    }
+
     fs::write(out_dir.join("output.rs"), output).context("Failed to write output.rs")?;
 
     Ok(())
+}
+
+fn const_line(name: &str, path: &Path) -> String {
+    format!("const {name}: &[u8] = include_bytes!({path:?});\n")
 }
 
 fn build_runtime(out_dir: &Path, build: RuntimeBuild) -> Result<PathBuf> {
@@ -182,7 +268,7 @@ fn build_runtime(out_dir: &Path, build: RuntimeBuild) -> Result<PathBuf> {
         cargo.arg("--release");
     }
 
-    if component_model_async_enabled() {
+    if build.async_support() {
         cargo.arg("--features").arg("component-model-async");
     }
 
