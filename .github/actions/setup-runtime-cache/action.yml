@@ -1,0 +1,23 @@
+name: Setup runtime wasm cache
+
+runs:
+  using: composite
+  steps:
+    - name: Cache runtime wasm
+      id: cache
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      with:
+        path: crates/core/prebuilt
+        key: runtime-wasm-v1-${{ hashFiles('crates/runtime/**', 'crates/core/build.rs', 'Cargo.lock') }}
+
+    - name: Build runtime wasm
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        cargo build -p componentize-qjs
+        mkdir -p crates/core/prebuilt
+        for f in runtime.wasm runtime-opt-size.wasm runtime-sync.wasm runtime-opt-size-sync.wasm; do
+          src=$(find target -path "*/out/$f" -type f | sort | tail -n 1)
+          test -n "$src" || { echo "ERROR: built runtime $f not found"; exit 1; }
+          cp "$src" "crates/core/prebuilt/$f"
+        done
