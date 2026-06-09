@@ -44,7 +44,6 @@ pub fn async_engine() -> &'static Engine {
         let mut config = Config::new();
         config.wasm_component_model(true);
         config.wasm_component_model_async(true);
-        config.wasm_component_model_async_builtins(true);
         config.wasm_component_model_async_stackful(true);
         Engine::new(&config).expect("Failed to create async engine")
     })
