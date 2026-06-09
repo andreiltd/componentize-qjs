@@ -88,7 +88,16 @@ describe("componentize", () => {
         optSize: true,
         runtimeBytes: Buffer.from([]),
       }),
-    ).rejects.toThrow(/only one of optSize, runtime, or runtimeBytes/i);
+    ).rejects.toThrow(/cannot be combined with a custom runtime/i);
+
+    await expect(
+      componentize({
+        witPath: resolve(examplesDir, "hello.wit"),
+        jsSource: readExample("hello.js"),
+        runtime: "/nonexistent/runtime.wasm",
+        runtimeBytes: Buffer.from([]),
+      }),
+    ).rejects.toThrow(/only one of runtime or runtimeBytes/i);
   });
 
   it("rejects a non-existent WIT path", async () => {

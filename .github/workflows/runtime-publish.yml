@@ -21,17 +21,17 @@ env:
   CARGO_TERM_COLOR: always
   RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
   IMAGE_NAME: ${{ github.repository }}
-  COMPONENT_NAME: componentize-qjs-runtime
-  COMPONENT_NAME_OPT_SIZE: componentize-qjs-runtime-opt-size
-  COMPONENT_DESCRIPTION: QuickJS runtime for componentize-qjs
-  COMPONENT_DESCRIPTION_OPT_SIZE: QuickJS runtime for componentize-qjs optimized for size
   COMPONENT_SOURCE: https://github.com/${{ github.repository }}
   COMPONENT_HOMEPAGE: https://github.com/${{ github.repository }}
   COMPONENT_LICENSES: Apache-2.0
   WASM_FILE: dist/componentize_qjs_runtime.wasm
   WASM_FILE_OPT_SIZE: dist/componentize_qjs_runtime_opt_size.wasm
+  WASM_FILE_SYNC: dist/componentize_qjs_runtime_sync.wasm
+  WASM_FILE_OPT_SIZE_SYNC: dist/componentize_qjs_runtime_opt_size_sync.wasm
   SBOM_FILE: dist/componentize_qjs_runtime.wasm.cdx.json
   SBOM_FILE_OPT_SIZE: dist/componentize_qjs_runtime_opt_size.wasm.cdx.json
+  SBOM_FILE_SYNC: dist/componentize_qjs_runtime_sync.wasm.cdx.json
+  SBOM_FILE_OPT_SIZE_SYNC: dist/componentize_qjs_runtime_opt_size_sync.wasm.cdx.json
 
 jobs:
   build:
@@ -77,7 +77,9 @@ jobs:
             target/runtime-publish \
             dist \
             runtime.wasm=componentize_qjs_runtime.wasm \
-            runtime-opt-size.wasm=componentize_qjs_runtime_opt_size.wasm
+            runtime-opt-size.wasm=componentize_qjs_runtime_opt_size.wasm \
+            runtime-sync.wasm=componentize_qjs_runtime_sync.wasm \
+            runtime-opt-size-sync.wasm=componentize_qjs_runtime_opt_size_sync.wasm
 
       - name: Upload runtime artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -90,10 +92,16 @@ jobs:
             ${{ env.WASM_FILE_OPT_SIZE }}
             ${{ env.WASM_FILE_OPT_SIZE }}.sha256
             ${{ env.SBOM_FILE_OPT_SIZE }}
+            ${{ env.WASM_FILE_SYNC }}
+            ${{ env.WASM_FILE_SYNC }}.sha256
+            ${{ env.SBOM_FILE_SYNC }}
+            ${{ env.WASM_FILE_OPT_SIZE_SYNC }}
+            ${{ env.WASM_FILE_OPT_SIZE_SYNC }}.sha256
+            ${{ env.SBOM_FILE_OPT_SIZE_SYNC }}
           if-no-files-found: error
 
   publish:
-    name: Publish ${{ matrix.runtime }} runtime (${{ matrix.channel }})
+    name: Publish ${{ matrix.runtime.name }} runtime (${{ matrix.channel }})
     if: github.event_name != 'workflow_dispatch'
     needs: build
     runs-on: ubuntu-latest
@@ -105,7 +113,27 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runtime: [default, opt-size]
+        runtime:
+          - name: default
+            wasm: dist/componentize_qjs_runtime.wasm
+            sbom: dist/componentize_qjs_runtime.wasm.cdx.json
+            oci: componentize-qjs-runtime
+            description: QuickJS runtime for componentize-qjs
+          - name: opt-size
+            wasm: dist/componentize_qjs_runtime_opt_size.wasm
+            sbom: dist/componentize_qjs_runtime_opt_size.wasm.cdx.json
+            oci: componentize-qjs-runtime-opt-size
+            description: QuickJS runtime for componentize-qjs optimized for size
+          - name: sync
+            wasm: dist/componentize_qjs_runtime_sync.wasm
+            sbom: dist/componentize_qjs_runtime_sync.wasm.cdx.json
+            oci: componentize-qjs-runtime-sync
+            description: Non-async QuickJS runtime for componentize-qjs
+          - name: opt-size-sync
+            wasm: dist/componentize_qjs_runtime_opt_size_sync.wasm
+            sbom: dist/componentize_qjs_runtime_opt_size_sync.wasm.cdx.json
+            oci: componentize-qjs-runtime-opt-size-sync
+            description: Non-async QuickJS runtime for componentize-qjs optimized for size
         channel: [versioned, latest]
 
     steps:
@@ -143,11 +171,11 @@ jobs:
       - name: Publish runtime
         uses: ./.github/actions/publish-runtime
         with:
-          file: ${{ matrix.runtime == 'default' && env.WASM_FILE || env.WASM_FILE_OPT_SIZE }}
-          sbom-file: ${{ matrix.runtime == 'default' && env.SBOM_FILE || env.SBOM_FILE_OPT_SIZE }}
-          oci-reference-without-tag: ghcr.io/${{ env.IMAGE_NAME }}/${{ matrix.runtime == 'default' && env.COMPONENT_NAME || env.COMPONENT_NAME_OPT_SIZE }}
+          file: ${{ matrix.runtime.wasm }}
+          sbom-file: ${{ matrix.runtime.sbom }}
+          oci-reference-without-tag: ghcr.io/${{ env.IMAGE_NAME }}/${{ matrix.runtime.oci }}
           version: ${{ matrix.channel == 'versioned' && needs.build.outputs.version || 'latest' }}
-          description: ${{ matrix.runtime == 'default' && env.COMPONENT_DESCRIPTION || env.COMPONENT_DESCRIPTION_OPT_SIZE }}
+          description: ${{ matrix.runtime.description }}
           source: ${{ env.COMPONENT_SOURCE }}
           homepage: ${{ env.COMPONENT_HOMEPAGE }}
           licenses: ${{ env.COMPONENT_LICENSES }}

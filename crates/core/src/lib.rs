@@ -56,9 +56,27 @@ pub struct ComponentizeOpts<'a> {
 #[derive(Clone, Copy, Debug)]
 pub enum Runtime<'a> {
     /// Standard runtime optimized for speed.
+    ///
+    /// Built with component-model async support when the `component-model-async`
+    /// feature is enabled (the default); otherwise this is the non-async runtime.
     Default,
     /// Runtime optimized for smaller generated components.
+    ///
+    /// Built with component-model async support when the `component-model-async`
+    /// feature is enabled (the default); otherwise this is the non-async runtime.
     OptSize,
+    /// Non-async runtime optimized for speed.
+    ///
+    /// Produces components that do not use the component-model async ABI, so they
+    /// run on hosts without async support. Always available regardless of Cargo
+    /// features.
+    DefaultSync,
+    /// Non-async runtime optimized for smaller generated components.
+    ///
+    /// Produces components that do not use the component-model async ABI, so they
+    /// run on hosts without async support. Always available regardless of Cargo
+    /// features.
+    OptSizeSync,
     /// Caller-provided runtime Wasm bytes.
     Custom(&'a [u8]),
 }
@@ -129,10 +147,22 @@ pub fn opt_size_runtime_wasm() -> &'static [u8] {
     OPT_SIZE_RUNTIME_WASM
 }
 
+/// Return the built-in non-async runtime Wasm bytes.
+pub fn default_sync_runtime_wasm() -> &'static [u8] {
+    DEFAULT_SYNC_RUNTIME_WASM
+}
+
+/// Return the built-in non-async opt-size runtime Wasm bytes.
+pub fn opt_size_sync_runtime_wasm() -> &'static [u8] {
+    OPT_SIZE_SYNC_RUNTIME_WASM
+}
+
 fn runtime_wasm(runtime: Runtime<'_>) -> &[u8] {
     match runtime {
         Runtime::Default => DEFAULT_RUNTIME_WASM,
         Runtime::OptSize => OPT_SIZE_RUNTIME_WASM,
+        Runtime::DefaultSync => DEFAULT_SYNC_RUNTIME_WASM,
+        Runtime::OptSizeSync => OPT_SIZE_SYNC_RUNTIME_WASM,
         Runtime::Custom(wasm) => wasm,
     }
 }
