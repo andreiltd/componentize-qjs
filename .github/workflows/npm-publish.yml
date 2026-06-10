@@ -7,6 +7,11 @@ on:
         description: Release tag to build from
         required: false
         type: string
+      publish:
+        description: Publish to npm (manual runs are build-only by default)
+        required: false
+        default: false
+        type: boolean
   workflow_call:
     inputs:
       release_tag:
@@ -183,18 +188,7 @@ jobs:
         working-directory: npm
         run: ${{ github.workspace }}/.github/scripts/check-npm-packages.sh
 
-      - name: Publish platform packages
-        if: github.event_name != 'workflow_dispatch'
+      - name: Publish to npm
+        if: github.event_name != 'workflow_dispatch' || inputs.publish
         working-directory: npm
-        shell: bash
-        run: |
-          set -euo pipefail
-          for package_json in npm/*/package.json; do
-            package_dir="$(dirname "$package_json")"
-            (cd "$package_dir" && npm publish --access public)
-          done
-
-      - name: Publish main package
-        if: github.event_name != 'workflow_dispatch'
-        working-directory: npm
-        run: npm publish --access public
+        run: ${{ github.workspace }}/.github/scripts/publish-npm-packages.sh
