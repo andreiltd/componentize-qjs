@@ -80,5 +80,11 @@ wit-parser.workspace = true
 [profile.release]
 lto = true
 
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
 [profile.test]
+debug = "line-tables-only"
+incremental = false
 opt-level = 3

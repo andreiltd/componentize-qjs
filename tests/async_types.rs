@@ -1028,6 +1028,84 @@ async fn test_stream_write_uint8_array() {
 }
 
 #[tokio::test]
+async fn test_stream_write_all_uint8_array() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:stream-write-all;
+            world stream-write-all {
+                export round-trip-u8: async func(input: stream<u8>) -> list<u8>;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            export async function roundTripU8(input) {
+                input.drop();
+                const { readable, writable } = wit.Stream();
+                const readPromise = readable.read(1024);
+                const total = await writable.writeAll(new Uint8Array([97, 98, 99, 0, 255]));
+                if (total !== 5) throw new Error(`writeAll returned ${total}, expected 5`);
+                writable.drop();
+                const data = await readPromise;
+                readable.drop();
+                return Array.from(data);
+            }
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    let (inst, store) = instance.parts();
+    let reader = StreamReader::new(&mut *store, ByteProducer::new(vec![])).unwrap();
+    let func = inst
+        .get_typed_func::<(StreamReader<u8>,), (Vec<u8>,)>(&mut *store, "round-trip-u8")
+        .unwrap();
+    let (bytes,) = func.call_async(&mut *store, (reader,)).await.unwrap();
+    assert_eq!(bytes, vec![97, 98, 99, 0, 255]);
+}
+
+#[tokio::test]
+async fn test_stream_write_all_array() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:stream-write-all-array;
+            world stream-write-all-array {
+                export round-trip-array: async func(input: stream<u8>) -> list<u8>;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            export async function roundTripArray(input) {
+                input.drop();
+                const { readable, writable } = wit.Stream();
+                const readPromise = readable.read(1024);
+                const total = await writable.writeAll([10, 20, 30]);
+                if (total !== 3) throw new Error(`writeAll returned ${total}, expected 3`);
+                writable.drop();
+                const data = await readPromise;
+                readable.drop();
+                return Array.from(data);
+            }
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    let (inst, store) = instance.parts();
+    let reader = StreamReader::new(&mut *store, ByteProducer::new(vec![])).unwrap();
+    let func = inst
+        .get_typed_func::<(StreamReader<u8>,), (Vec<u8>,)>(&mut *store, "round-trip-array")
+        .unwrap();
+    let (bytes,) = func.call_async(&mut *store, (reader,)).await.unwrap();
+    assert_eq!(bytes, vec![10, 20, 30]);
+}
+
+#[tokio::test]
 async fn test_stream_write_uint32_array() {
     // Verify the typed-array fast path handles wider primitive element types
     // (Uint32Array → stream<u32>): element-count semantics, not byte count.
