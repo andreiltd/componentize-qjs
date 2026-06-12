@@ -418,7 +418,10 @@ fn write_all_step<'js>(
 
             let sliced: Value = if let Some(obj) = buf.as_object() {
                 let slice_fn: Function = obj.get("slice")?;
-                slice_fn.call((count,))?
+                let mut slice_args = function::Args::new(ctx.clone(), 1);
+                slice_args.this(buf.clone())?;
+                slice_args.push_arg(count)?;
+                slice_fn.call_arg(slice_args)?
             } else {
                 Value::new_undefined(ctx.clone())
             };

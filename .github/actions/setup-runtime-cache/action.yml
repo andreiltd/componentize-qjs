@@ -8,7 +8,7 @@ runs:
       uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
       with:
         path: crates/core/prebuilt
-        key: runtime-wasm-v1-${{ hashFiles('crates/runtime/**', 'crates/core/build.rs', 'Cargo.lock') }}
+        key: runtime-wasm-v2-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/runtime/**', 'crates/core/build.rs') }}
 
     - name: Build runtime wasm
       if: steps.cache.outputs.cache-hit != 'true'

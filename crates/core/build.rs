@@ -65,6 +65,44 @@ impl RuntimeBuild {
     }
 }
 
+struct CargoProfile {
+    name: String,
+    release: bool,
+}
+
+impl CargoProfile {
+    fn current() -> Self {
+        let name = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
+        let release = name == "release";
+        Self { name, release }
+    }
+
+    fn runtime_rustflags(&self, optimize_size: bool) -> String {
+        let flags = "-Clink-arg=-shared -Clink-arg=-Wl,--no-entry -Clink-arg=-Wl,--allow-undefined";
+        match (self.release, optimize_size) {
+            (true, true) => format!("{flags} -Clto=fat -Copt-level=z"),
+            (true, false) => format!("{flags} -Clto=fat -Copt-level=3"),
+            (false, _) => flags.to_string(),
+        }
+    }
+
+    fn runtime_cflags(&self, optimize_size: bool) -> String {
+        let flags = "-fPIC";
+        match (self.release, optimize_size) {
+            (true, true) => format!("{flags} -Oz"),
+            (true, false) => format!("{flags} -O3"),
+            (false, _) => flags.to_string(),
+        }
+    }
+
+    fn configure_nested_build(&self, cargo: &mut Command) {
+        if !self.release {
+            set_env_if_unset(cargo, "CARGO_PROFILE_DEV_DEBUG", "0");
+        }
+        set_env_if_unset(cargo, "CARGO_INCREMENTAL", "0");
+    }
+}
+
 /// Resolved Wasm paths for each embedded runtime variant.
 ///
 /// The non-async variants are always present. The async variants are `None`
@@ -118,13 +156,14 @@ fn main() -> Result<()> {
         );
     }
 
+    let profile = CargoProfile::current();
     // Non-async runtimes are always embedded; async runtimes only when the feature is on.
-    let default_sync = build_runtime(&out_dir, RuntimeBuild::DEFAULT_SYNC)?;
-    let opt_size_sync = build_runtime(&out_dir, RuntimeBuild::OPT_SIZE_SYNC)?;
+    let default_sync = build_runtime(&out_dir, RuntimeBuild::DEFAULT_SYNC, &profile)?;
+    let opt_size_sync = build_runtime(&out_dir, RuntimeBuild::OPT_SIZE_SYNC, &profile)?;
     let (default_async, opt_size_async) = if async_on {
         (
-            Some(build_runtime(&out_dir, RuntimeBuild::DEFAULT)?),
-            Some(build_runtime(&out_dir, RuntimeBuild::OPT_SIZE)?),
+            Some(build_runtime(&out_dir, RuntimeBuild::DEFAULT, &profile)?),
+            Some(build_runtime(&out_dir, RuntimeBuild::OPT_SIZE, &profile)?),
         )
     } else {
         (None, None)
@@ -216,7 +255,13 @@ fn const_line(name: &str, path: &Path) -> String {
     format!("const {name}: &[u8] = include_bytes!({path:?});\n")
 }
 
-fn build_runtime(out_dir: &Path, build: RuntimeBuild) -> Result<PathBuf> {
+fn set_env_if_unset(cargo: &mut Command, key: &str, value: &str) {
+    if env::var_os(key).is_none() {
+        cargo.env(key, value);
+    }
+}
+
+fn build_runtime(out_dir: &Path, build: RuntimeBuild, profile: &CargoProfile) -> Result<PathBuf> {
     let target = "wasm32-wasip2";
     let upcase = target.to_uppercase().replace('-', "_");
 
@@ -224,24 +269,9 @@ fn build_runtime(out_dir: &Path, build: RuntimeBuild) -> Result<PathBuf> {
     let wasi_sdk = get_wasi_sdk(out_dir)?;
     eprintln!("Using wasi-sdk at: {}", wasi_sdk.display());
 
-    let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
     let optimize_size = build.optimize_size();
-    let is_release = profile == "release";
-
-    // Link libc statically into the shared wasm module.
-    let flags = "-Clink-arg=-shared -Clink-arg=-Wl,--no-entry -Clink-arg=-Wl,--allow-undefined";
-    let rustflags = match (is_release, optimize_size) {
-        (true, true) => format!("{flags} -Clto=fat -Copt-level=z"),
-        (true, false) => format!("{flags} -Clto=fat -Copt-level=3"),
-        (_, _) => flags.to_string(),
-    };
-
-    let flags = "-fPIC";
-    let cflags = match (is_release, optimize_size) {
-        (true, true) => format!("{flags} -Oz"),
-        (true, false) => format!("{flags} -O3"),
-        (_, _) => flags.to_string(),
-    };
+    let rustflags = profile.runtime_rustflags(optimize_size);
+    let cflags = profile.runtime_cflags(optimize_size);
 
     let clang = executable(&wasi_sdk, "bin/clang");
     let target_dir = out_dir.join(format!("runtime-{}", build.name()));
@@ -264,7 +294,9 @@ fn build_runtime(out_dir: &Path, build: RuntimeBuild) -> Result<PathBuf> {
         .env("WASI_SDK", &wasi_sdk)
         .env_remove("CARGO_ENCODED_RUSTFLAGS");
 
-    if is_release {
+    profile.configure_nested_build(&mut cargo);
+
+    if profile.release {
         cargo.arg("--release");
     }
 
@@ -280,7 +312,7 @@ fn build_runtime(out_dir: &Path, build: RuntimeBuild) -> Result<PathBuf> {
 
     let runtime_src = target_dir
         .join(target)
-        .join(&profile)
+        .join(&profile.name)
         .join("componentize_qjs_runtime.wasm");
 
     let runtime_dst = out_dir.join(build.filename());
@@ -288,7 +320,7 @@ fn build_runtime(out_dir: &Path, build: RuntimeBuild) -> Result<PathBuf> {
     fs::copy(&runtime_src, &runtime_dst)
         .with_context(|| format!("Failed to copy {}", runtime_src.display()))?;
 
-    if is_release {
+    if profile.release {
         let wasm_opt = get_wasm_opt(out_dir)?;
         let opt_level = if optimize_size { "-Oz" } else { "-O3" };
 
@@ -310,7 +342,18 @@ fn build_runtime(out_dir: &Path, build: RuntimeBuild) -> Result<PathBuf> {
         }
     }
 
+    cleanup_runtime_target_dir(&target_dir);
+
     Ok(runtime_dst)
+}
+
+fn cleanup_runtime_target_dir(target_dir: &Path) {
+    if let Err(err) = fs::remove_dir_all(target_dir) {
+        eprintln!(
+            "warning: failed to clean nested runtime target dir {}: {err}",
+            target_dir.display()
+        );
+    }
 }
 
 fn component_model_async_enabled() -> bool {
