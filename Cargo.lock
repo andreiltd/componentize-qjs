@@ -488,6 +488,7 @@ name = "componentize-qjs-runtime"
 version = "0.3.0"
 dependencies = [
  "heck",
+ "indexmap",
  "num_enum",
  "rquickjs",
  "smallvec",

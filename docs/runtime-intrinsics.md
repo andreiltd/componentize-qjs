@@ -16,7 +16,7 @@ possible.
 | JS classes | PascalCase | `StreamReadable`, `FutureWritable` |
 | Prototype methods | camelCase | `read`, `cancelRead`, `writeAll` |
 | WIT functions → JS | lowerCamelCase | `myFunction` from `my-function` |
-| WIT types → JS | UpperCamelCase | `MyRecord` from `my-record` |
+| WIT resources → JS | UpperCamelCase class | `InputStream` from `input-stream` |
 | Type constants | UPPER_SNAKE_CASE | `wit.Stream.U8`, `wit.Future.RESULT_STRING_U32` |
 
 ---
@@ -238,12 +238,16 @@ WIT function names are converted from kebab-case to lowerCamelCase:
 
 ### Import Types
 
-| WIT Category | JS Convention | Example |
+Enums, variants, flags, and records have no standalone runtime object; they are
+represented directly by their values. Resources are exposed as classes.
+
+| WIT Category | JS Representation | Example |
 |---|---|---|
-| Flags | UpperCamelCase object | `MyFlags.FlagA = 1`, `MyFlags.FlagB = 2` |
-| Enums | UpperCamelCase object | `MyEnum.VariantA = 0`, `MyEnum[0] = "variant-a"` |
-| Variants | UpperCamelCase object | `MyVariant.CaseA = 0`, `MyVariant[0] = "case-a"` |
-| Records | camelCase fields | `{ fieldName: value }` |
+| Enums | case-name string | `"variant-a"` |
+| Variants | `{ tag, val }` (string tag) | `{ tag: "case-a", val }` |
+| Flags | `{ name: boolean }` object | `{ flagA: true, flagB: false }` |
+| Records | object, camelCase fields | `{ fieldName: value }` |
+| Resources | class instance; methods on prototype | `input.blockingRead(n)` |
 
 ### Export Functions
 
@@ -251,16 +255,22 @@ Export functions are looked up from the evaluated user ES module namespace
 using the same lowerCamelCase convention, optionally nested under the
 lowerCamelCase exported interface name.
 
-### Result / Variant Protocol
+### Result / Variant / Enum / Flags / Option Protocol
 
-WIT `result` and `variant` values are represented as plain objects:
+WIT `result` and `variant` values are represented as plain objects with a
+string `tag`:
 
 ```js
 // result<string, u32>
 { tag: "ok", val: "hello" }
 { tag: "err", val: 42 }
 
-// variant (tag is numeric)
-{ tag: 0, val: "payload" }
-{ tag: 1 }  // no payload case
+// variant (tag is the case name)
+{ tag: "circle", val: "payload" }
+{ tag: "none" }  // no payload case
 ```
+
+`enum` values are case-name strings (`"variant-a"`), `flags` are
+`{ camelCaseName: boolean }` objects, and `option<T>` is `T | null` — except a
+nested `option<option<T>>`, which is wrapped as `{ tag: "some", val } |
+{ tag: "none" }` so that `none` and `some(none)` stay distinct.

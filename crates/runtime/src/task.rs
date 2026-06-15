@@ -2,11 +2,11 @@
 #![allow(unsafe_code)]
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 
 use rquickjs::{JsLifetime, Persistent, Value};
 
 use crate::CtxExt;
+use crate::DetHashMap;
 use crate::abi::*;
 use crate::buffer::BufferGuard;
 use crate::{QjsCallContext, resolve_promise, with_ctx};
@@ -53,7 +53,7 @@ pub(crate) enum Pending {
 /// Inflight async operations for a single export call.
 #[derive(Default)]
 struct TaskInner {
-    pending: HashMap<u32, Pending>,
+    pending: DetHashMap<u32, Pending>,
     waitable_set: Option<u32>,
 }
 

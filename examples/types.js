@@ -45,20 +45,19 @@ export function safeDivide(a, b) {
     return { tag: "ok", val: Math.floor(a / b) };
 }
 
-// Enum - represented as discriminant number
+// Enum - represented as its case-name string
 export function colorName(c) {
-    const names = ["red", "green", "blue"];
-    return names[c] || "unknown";
+    return c;
 }
 
-// Flags - represented as bitmask
+// Flags - represented as a { name: boolean } object
 export function checkRead(p) {
-    return (p & 1) !== 0; // read is bit 0
+    return p.read === true; // read flag
 }
 
-// Variant - {tag: discriminant, val: payload}
+// Variant - { tag: case-name, val: payload }
 export function shapeArea(s) {
-    if (s.tag === 0) {
+    if (s.tag === "circle") {
         // circle - val is radius
         const r = s.val;
         return Math.PI * r * r;

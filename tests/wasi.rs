@@ -156,7 +156,6 @@ fn test_wasi_stdio() {
             r#"
             import stdin from "wasi:cli/stdin@0.2.6";
             import stdout from "wasi:cli/stdout@0.2.6";
-            import streams from "wasi:io/streams@0.2.6";
 
             export function unwrap(result) {
                 if (result.tag === "ok") {
@@ -170,12 +169,12 @@ fn test_wasi_stdio() {
                 const output = stdout.getStdout();
 
                 while (true) {
-                    const chunk = streams.methodInputStreamBlockingRead(input, 4096);
-                    if (chunk.tag === "err" && chunk.val.tag === 1) {
+                    const chunk = input.blockingRead(4096);
+                    if (chunk.tag === "err" && chunk.val.tag === "closed") {
                         break;
                     }
 
-                    unwrap(streams.methodOutputStreamBlockingWriteAndFlush(output, unwrap(chunk)));
+                    unwrap(output.blockingWriteAndFlush(unwrap(chunk)));
                 }
 
                 return { tag: "ok" };
@@ -188,37 +187,6 @@ fn test_wasi_stdio() {
     let result = inst.call1("echo-stdin-to-stdout", &[]);
     assert_eq!(result, Val::Result(Ok(None)));
     assert_eq!(inst.stdout_bytes(), b"hello from stdin");
-}
-
-#[test]
-fn test_wasi_named_type_imports() {
-    let mut inst = TestCase::new()
-        .wit_dir(wasi_wit_dir())
-        .world("wasi-import-types")
-        .script(
-            r#"
-            import {
-                DescriptorFlags,
-                DescriptorType,
-                NewTimestamp,
-            } from "wasi:filesystem/types@0.2.6";
-
-            export function checkImportTypes() {
-                return DescriptorFlags.Read === 1
-                    && DescriptorFlags.Write === 2
-                    && DescriptorType.RegularFile === 6
-                    && DescriptorType[6] === "regular-file"
-                    && NewTimestamp.NoChange === 0
-                    && NewTimestamp.Now === 1
-                    && NewTimestamp[2] === "timestamp";
-            }
-        "#,
-        )
-        .build()
-        .expect("should build wasi filesystem type import component");
-
-    let result = inst.call1("check-import-types", &[]);
-    assert_eq!(result, Val::Bool(true));
 }
 
 #[tokio::test]
