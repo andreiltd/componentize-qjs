@@ -31,7 +31,7 @@ jobs:
           targets: wasm32-wasip2
 
       - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@aaa84a43aec4955a42c5ffc65d258961e39f276e # v1.19.1
+        uses: cargo-bins/cargo-binstall@30b5ca8b54e1dcffd9548bc87ede1531310fdc67 # v1.20.0
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
@@ -58,7 +58,7 @@ jobs:
 
       - name: Run release-plz
         id: release_plz
-        uses: release-plz/action@064f4d1e36c843611ddf013be726beaa4ad804db # v0.5.129
+        uses: release-plz/action@e8792575c7f2366cf6ff3ccc33ead9ace5b691c7 # v0.5.130
         with:
           command: release
           forge: github
@@ -142,7 +142,7 @@ jobs:
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Run release-plz
-        uses: release-plz/action@064f4d1e36c843611ddf013be726beaa4ad804db # v0.5.129
+        uses: release-plz/action@e8792575c7f2366cf6ff3ccc33ead9ace5b691c7 # v0.5.130
         with:
           command: release-pr
           forge: github
