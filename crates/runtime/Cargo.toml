@@ -13,7 +13,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 rquickjs = { version = "0.12", default-features = false, features = ["bindgen", "disable-assertions", "loader", "std", "macro"] }
-wit-bindgen = "0.57"
+wit-bindgen = "0.58"
 wit-dylib-ffi = { version = "0.1.0", git = "https://github.com/bytecodealliance/wasm-tools", default-features = false, features = ["async-raw"] }
 heck = "0.5"
 num_enum = { version = "0.7", default-features = false }

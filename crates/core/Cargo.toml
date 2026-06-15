@@ -36,8 +36,8 @@ anyhow.workspace = true
 bytes = "1"
 tokio.workspace = true
 wit-parser.workspace = true
-wit-component = { version = "0.251", features = ["dummy-module"] }
-wit-dylib = "0.251"
+wit-component = { version = "0.252", features = ["dummy-module"] }
+wit-dylib = "0.252"
 wasi-preview1-component-adapter-provider = "45"
 wasmtime.workspace = true
 wasmtime-wasi.workspace = true
