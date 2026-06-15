@@ -2,7 +2,7 @@ use crate::CtxExt;
 use crate::with_ctx;
 
 use heck::ToLowerCamelCase;
-use rquickjs::{Function, Object, Persistent};
+use rquickjs::{Atom, Function, Persistent, Symbol};
 use rquickjs::{Result, Value, function::Rest};
 
 /// Coerce closure lifetimes so the returned `Value<'js>` gets the same
@@ -35,10 +35,8 @@ pub(crate) fn resolve_promise(
 }
 
 /// Get `Symbol.for("dispose")` via the rquickjs API.
-pub(crate) fn symbol_dispose<'js>(ctx: &rquickjs::Ctx<'js>) -> Result<Value<'js>> {
-    let symbol: Object = ctx.globals().get("Symbol")?;
-    let for_fn: Function = symbol.get("for")?;
-    for_fn.call(("dispose",))
+pub(crate) fn symbol_dispose<'js>(ctx: &rquickjs::Ctx<'js>) -> Result<Atom<'js>> {
+    Ok(Symbol::new_global(ctx.clone(), "dispose")?.as_atom())
 }
 
 /// Convert a WIT function name to lower camel case, caching the result.

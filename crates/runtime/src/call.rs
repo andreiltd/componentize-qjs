@@ -453,17 +453,25 @@ impl Call for QjsCallContext {
     }
 
     unsafe fn push_raw_list(&mut self, ty: List, ptr: *mut u8, len: usize) -> bool {
-        if !matches!(ty.ty(), Type::U8 | Type::S8) {
-            return false;
+        match ty.ty() {
+            Type::U8 => {
+                let vec = unsafe { Vec::from_raw_parts(ptr, len, len) };
+                with_ctx(|ctx| {
+                    let ta = rquickjs::TypedArray::<u8>::new(ctx.clone(), vec).unwrap();
+                    self.stack.push(Persistent::save(ctx, ta.into_value()));
+                });
+                true
+            }
+            Type::S8 => {
+                let vec = unsafe { Vec::from_raw_parts(ptr.cast::<i8>(), len, len) };
+                with_ctx(|ctx| {
+                    let ta = rquickjs::TypedArray::<i8>::new(ctx.clone(), vec).unwrap();
+                    self.stack.push(Persistent::save(ctx, ta.into_value()));
+                });
+                true
+            }
+            _ => false,
         }
-
-        let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
-
-        with_ctx(|ctx| {
-            let ta = rquickjs::TypedArray::<u8>::new(ctx.clone(), slice).unwrap();
-            self.stack.push(Persistent::save(ctx, ta.into_value()));
-        });
-        true
     }
 
     fn push_list(&mut self, _ty: List, _capacity: usize) {
