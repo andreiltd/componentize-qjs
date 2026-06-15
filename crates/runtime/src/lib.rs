@@ -168,8 +168,13 @@ impl JsState {
 struct InitImpl;
 
 impl init::Guest for InitImpl {
-    fn init(shim: String, js: String, disable_gc: bool) -> Result<(), String> {
-        init_js(&shim, &js, disable_gc)
+    fn init(
+        shim: String,
+        js: String,
+        entry_path: Option<String>,
+        disable_gc: bool,
+    ) -> Result<(), String> {
+        init_js(&shim, &js, entry_path.as_deref(), disable_gc)
     }
 }
 
@@ -238,7 +243,12 @@ pub(crate) struct FnNameCache(RefCell<DetHashMap<&'static str, &'static str>>);
 
 /// Initialize the quickjs runtime with JavaScript source code.
 /// This is called by Wizer during pre-initialization.
-fn init_js(shim: &str, js_source: &str, disable_gc: bool) -> Result<(), String> {
+fn init_js(
+    shim: &str,
+    js_source: &str,
+    entry_path: Option<&str>,
+    disable_gc: bool,
+) -> Result<(), String> {
     let state = JsState::get_or_init();
 
     if state.evaluated.swap(true, Ordering::SeqCst) {
@@ -254,7 +264,7 @@ fn init_js(shim: &str, js_source: &str, disable_gc: bool) -> Result<(), String> 
 
     state.with_ctx(|ctx| {
         module::evaluate_shim(ctx, shim)?;
-        module::evaluate_user(ctx, js_source)
+        module::evaluate_user(ctx, js_source, entry_path)
     })?;
 
     unsafe {

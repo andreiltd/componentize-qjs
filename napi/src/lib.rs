@@ -11,6 +11,10 @@ pub struct ComponentizeOpts {
     pub wit_path: String,
     /// JavaScript source code
     pub js_source: String,
+    /// Path to the JavaScript entry file, used as the base for resolving imports
+    pub js_path: Option<String>,
+    /// Root directory exposed during Wizer for resolving JavaScript imports
+    pub module_root: Option<String>,
     /// World name to use from the WIT (omit for default world)
     pub world: Option<String>,
     /// Stub all WASI imports with traps (default: false)
@@ -52,6 +56,24 @@ pub async fn componentize(opts: ComponentizeOpts) -> Result<ComponentizeResult> 
 
     let opt_size = opts.opt_size.unwrap_or(false);
     let sync = opts.sync.unwrap_or(false);
+    let js_path = opts.js_path.as_ref().map(PathBuf::from);
+    if let Some(path) = &js_path
+        && !path.exists()
+    {
+        return Err(Error::new(
+            Status::InvalidArg,
+            format!("JavaScript entry file not found: {}", path.display()),
+        ));
+    }
+    let module_root = opts.module_root.as_ref().map(PathBuf::from);
+    if let Some(path) = &module_root
+        && !path.exists()
+    {
+        return Err(Error::new(
+            Status::InvalidArg,
+            format!("Module root not found: {}", path.display()),
+        ));
+    }
 
     if opts.runtime.is_some() && opts.runtime_bytes.is_some() {
         return Err(Error::new(
@@ -98,6 +120,8 @@ pub async fn componentize(opts: ComponentizeOpts) -> Result<ComponentizeResult> 
     let opts = componentize_qjs::ComponentizeOpts {
         wit_path: &wit_path,
         js_source: &opts.js_source,
+        js_path: js_path.as_deref(),
+        module_root: module_root.as_deref(),
         world_name: opts.world.as_deref(),
         stub_wasi: opts.stub_wasi.unwrap_or(false),
         disable_gc: opts.disable_gc.unwrap_or(false),

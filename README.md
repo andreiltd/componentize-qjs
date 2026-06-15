@@ -119,6 +119,7 @@ componentize-qjs [OPTIONS] --wit <WIT> --js <JS>
 | `--wit <PATH>` | `-w` | Path to the WIT file or directory |
 | `--js <PATH>` | `-j` | Path to the JavaScript source file |
 | `--output <PATH>` | `-o` | Output path (default: `output.wasm`) |
+| `--module-root <PATH>` | | Root directory exposed read-only during Wizer for resolving JavaScript imports |
 | `--world <NAME>` | `-n` | World name when the WIT defines multiple worlds |
 | `--stub-wasi` | | Replace all WASI imports with trap stubs |
 | `--minify` | `-m` | Minify JS source before embedding |
@@ -168,6 +169,13 @@ export function doubleAdd(a, b) {
     return math.multiply(sum, 2);
 }
 ```
+
+JavaScript modules imported by the entry file are resolved during Wizer
+initialization. Relative imports are resolved from the entry file path passed to
+`--js`; bare package imports are resolved under the read-only module root. By
+default the CLI uses the current directory when the entry file is under it, or
+the entry file's parent directory otherwise. Use `--module-root <PATH>` to expose
+a project root that contains shared files or `node_modules`.
 
 ## WIT Type Mappings
 

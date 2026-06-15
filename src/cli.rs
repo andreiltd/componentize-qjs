@@ -25,6 +25,10 @@ pub struct CliArgs {
     #[arg(short, long)]
     pub js: std::path::PathBuf,
 
+    /// Root directory exposed during Wizer for resolving JavaScript imports
+    #[arg(long, value_name = "PATH")]
+    pub module_root: Option<std::path::PathBuf>,
+
     /// Output path for the component
     #[arg(short, long, default_value = "output.wasm")]
     pub output: std::path::PathBuf,
@@ -74,6 +78,11 @@ pub async fn run(args: Vec<String>) -> Result<()> {
         && !runtime_file.exists()
     {
         anyhow::bail!("Runtime file not found: {}", runtime_file.display());
+    }
+    if let Some(module_root) = &args.module_root
+        && !module_root.exists()
+    {
+        anyhow::bail!("Module root not found: {}", module_root.display());
     }
 
     let js_source = fs::read_to_string(&args.js)
@@ -127,6 +136,8 @@ pub async fn run(args: Vec<String>) -> Result<()> {
     let component = componentize(&ComponentizeOpts {
         wit_path: &args.wit,
         js_source: &js_source,
+        js_path: Some(&args.js),
+        module_root: args.module_root.as_deref(),
         world_name: args.world.as_deref(),
         stub_wasi: args.stub_wasi,
         disable_gc: args.disable_gc,

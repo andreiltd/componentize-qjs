@@ -18,6 +18,7 @@ fn test_cli_help() {
         .stdout(predicate::str::contains("Usage: componentize-qjs"))
         .stdout(predicate::str::contains("--opt-size"))
         .stdout(predicate::str::contains("--sync"))
+        .stdout(predicate::str::contains("--module-root <PATH>"))
         .stdout(predicate::str::contains("--runtime <PATH>"));
 }
 
@@ -76,6 +77,191 @@ fn test_cli_output() {
         ComponentInstance::from_wasm(wasm, vec![], vec![]).expect("should instantiate component");
 
     assert_eq!(inst.call1("add", &[Val::U32(3), Val::U32(4)]), Val::U32(7));
+}
+
+#[test]
+fn test_cli_resolves_relative_import() {
+    let dir = TempDir::new().unwrap();
+    let wit_path = dir.path().join("test.wit");
+    let js_path = dir.path().join("main.js");
+    let dep_path = dir.path().join("dep.js");
+    let output = dir.path().join("output.wasm");
+
+    fs::write(
+        &wit_path,
+        "package test:modules;\nworld modules { export answer: func() -> u32; }",
+    )
+    .unwrap();
+    fs::write(
+        &js_path,
+        r#"import { value } from "./dep.js"; export function answer() { return value + 1; }"#,
+    )
+    .unwrap();
+    fs::write(&dep_path, "export const value = 41;").unwrap();
+
+    componentize_qjs()
+        .arg("--wit")
+        .arg(&wit_path)
+        .arg("--js")
+        .arg(&js_path)
+        .arg("--output")
+        .arg(&output)
+        .assert()
+        .success();
+
+    let wasm = fs::read(&output).unwrap();
+    let mut inst =
+        ComponentInstance::from_wasm(wasm, vec![], vec![]).expect("should instantiate component");
+
+    assert_eq!(inst.call1("answer", &[]), Val::U32(42));
+}
+
+#[test]
+fn test_cli_resolves_package_import_from_module_root() {
+    let dir = TempDir::new().unwrap();
+    let src_dir = dir.path().join("src");
+    let pkg_dir = dir.path().join("node_modules").join("pkg");
+    fs::create_dir_all(&src_dir).unwrap();
+    fs::create_dir_all(&pkg_dir).unwrap();
+
+    let wit_path = dir.path().join("test.wit");
+    let js_path = src_dir.join("main.js");
+    let output = dir.path().join("output.wasm");
+
+    fs::write(
+        &wit_path,
+        "package test:modules;\nworld modules { export answer: func() -> u32; }",
+    )
+    .unwrap();
+    fs::write(
+        &js_path,
+        r#"import { value } from "pkg"; export function answer() { return value + 1; }"#,
+    )
+    .unwrap();
+    fs::write(pkg_dir.join("package.json"), r#"{"main":"index.js"}"#).unwrap();
+    fs::write(pkg_dir.join("index.js"), "export const value = 41;").unwrap();
+
+    componentize_qjs()
+        .arg("--wit")
+        .arg(&wit_path)
+        .arg("--js")
+        .arg(&js_path)
+        .arg("--module-root")
+        .arg(dir.path())
+        .arg("--output")
+        .arg(&output)
+        .assert()
+        .success();
+
+    let wasm = fs::read(&output).unwrap();
+    let mut inst =
+        ComponentInstance::from_wasm(wasm, vec![], vec![]).expect("should instantiate component");
+
+    assert_eq!(inst.call1("answer", &[]), Val::U32(42));
+}
+
+#[test]
+fn test_cli_resolves_nested_imports_and_caches_modules() {
+    let dir = TempDir::new().unwrap();
+    let nested_dir = dir.path().join("nested");
+    let index_dir = dir.path().join("dir");
+    fs::create_dir_all(&nested_dir).unwrap();
+    fs::create_dir_all(&index_dir).unwrap();
+
+    let wit_path = dir.path().join("test.wit");
+    let js_path = dir.path().join("main.js");
+    let output = dir.path().join("output.wasm");
+
+    fs::write(
+        &wit_path,
+        "package test:modules;\nworld modules { export answer: func() -> u32; }",
+    )
+    .unwrap();
+    fs::write(
+        &js_path,
+        r#"
+            import { nested } from "./nested/entry";
+            import { fromIndex } from "./dir";
+            import { count as countA } from "./a.js";
+            import { count as countB } from "./b.js";
+
+            export function answer() {
+                return nested + fromIndex + countA + countB + globalThis.__counter;
+            }
+        "#,
+    )
+    .unwrap();
+    fs::write(
+        nested_dir.join("entry.js"),
+        r#"import { base } from "./base"; export const nested = base * 2;"#,
+    )
+    .unwrap();
+    fs::write(nested_dir.join("base.js"), "export const base = 10;").unwrap();
+    fs::write(index_dir.join("index.js"), "export const fromIndex = 5;").unwrap();
+    fs::write(
+        dir.path().join("counter.js"),
+        r#"
+            globalThis.__counter = (globalThis.__counter ?? 0) + 1;
+            export const count = globalThis.__counter;
+        "#,
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("a.js"),
+        r#"import { count } from "./counter.js"; export { count };"#,
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("b.js"),
+        r#"import { count } from "./counter.js"; export { count };"#,
+    )
+    .unwrap();
+
+    componentize_qjs()
+        .arg("--wit")
+        .arg(&wit_path)
+        .arg("--js")
+        .arg(&js_path)
+        .arg("--output")
+        .arg(&output)
+        .assert()
+        .success();
+
+    let wasm = fs::read(&output).unwrap();
+    let mut inst =
+        ComponentInstance::from_wasm(wasm, vec![], vec![]).expect("should instantiate component");
+
+    assert_eq!(inst.call1("answer", &[]), Val::U32(28));
+}
+
+#[test]
+fn test_cli_reports_missing_import() {
+    let dir = TempDir::new().unwrap();
+    let wit_path = dir.path().join("test.wit");
+    let js_path = dir.path().join("main.js");
+    let output = dir.path().join("output.wasm");
+
+    fs::write(
+        &wit_path,
+        "package test:modules;\nworld modules { export answer: func() -> u32; }",
+    )
+    .unwrap();
+    fs::write(
+        &js_path,
+        r#"import { value } from "./missing.js"; export function answer() { return value; }"#,
+    )
+    .unwrap();
+
+    componentize_qjs()
+        .arg("--wit")
+        .arg(&wit_path)
+        .arg("--js")
+        .arg(&js_path)
+        .arg("--output")
+        .arg(&output)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("filesystem module not found"));
 }
 
 #[test]
