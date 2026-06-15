@@ -14,6 +14,10 @@ export interface ComponentizeOpts {
   witPath: string
   /** JavaScript source code */
   jsSource: string
+  /** Path to the JavaScript entry file, used as the base for resolving imports */
+  jsPath?: string
+  /** Root directory exposed during Wizer for resolving JavaScript imports */
+  moduleRoot?: string
   /** World name to use from the WIT (omit for default world) */
   world?: string
   /** Stub all WASI imports with traps (default: false) */

@@ -1591,6 +1591,8 @@ fn test_exported_resource() {
             }
             export const counterApi = { Counter };
         "#,
+        js_path: None,
+        module_root: None,
         world_name: None,
         stub_wasi: true,
         disable_gc: false,
@@ -1705,6 +1707,8 @@ fn test_static_resource_method_in_interface() {
             }
             export const widgetApi = { Widget };
         "#,
+        js_path: None,
+        module_root: None,
         world_name: None,
         stub_wasi: true,
         disable_gc: false,

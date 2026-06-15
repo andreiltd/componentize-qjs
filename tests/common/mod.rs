@@ -146,6 +146,8 @@ impl TestCase {
         let opts = ComponentizeOpts {
             wit_path: &wit_path,
             js_source: self.script.as_deref().unwrap(),
+            js_path: None,
+            module_root: None,
             world_name: self.world_name.as_deref(),
             stub_wasi: self.stub_wasi,
             disable_gc: false,
@@ -175,6 +177,8 @@ impl TestCase {
         let opts = ComponentizeOpts {
             wit_path: &wit_path,
             js_source: self.script.as_deref().unwrap(),
+            js_path: None,
+            module_root: None,
             world_name: self.world_name.as_deref(),
             stub_wasi: self.stub_wasi,
             disable_gc: false,

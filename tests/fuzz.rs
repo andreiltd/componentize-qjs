@@ -254,6 +254,8 @@ mod fuzz {
             let opts = ComponentizeOpts {
                 wit_path: &wit,
                 js_source: &js,
+                js_path: None,
+                module_root: None,
                 world_name: None,
                 stub_wasi: true,
                 disable_gc: false,
@@ -457,6 +459,8 @@ mod fuzz_async {
             let opts = ComponentizeOpts {
                 wit_path: &wit,
                 js_source: &js,
+                js_path: None,
+                module_root: None,
                 world_name: None,
                 stub_wasi: false,
                 disable_gc: false,
