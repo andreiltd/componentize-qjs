@@ -29,6 +29,8 @@ impl Interpreter for QjsInterpreter {
                 .expect("Failed to store WIT userdata");
             ctx.store_userdata(ResourceTable::default())
                 .expect("Failed to store ResourceTable userdata");
+            ctx.store_userdata(crate::resources::ResourceClasses::default())
+                .expect("Failed to store ResourceClasses userdata");
             ctx.store_userdata(TaskState::new())
                 .expect("Failed to store TaskState userdata");
             register(ctx, wit).expect("Failed to register WIT bindings");

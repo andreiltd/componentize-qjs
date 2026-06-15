@@ -7,7 +7,7 @@ use crate::trivia::fn_lookup;
 use crate::{BorrowedResource, QjsCallContext, with_ctx};
 
 use rquickjs::class::Class;
-use rquickjs::{IntoJs, Persistent, Value};
+use rquickjs::{Coerced, IntoJs, Persistent, Value};
 use smallvec::SmallVec;
 use wit_dylib_ffi::{
     Call, Enum, Flags, Future, List, Record, Resource, Stream, Tuple, Type, Variant, WitOption,
@@ -15,6 +15,18 @@ use wit_dylib_ffi::{
 };
 
 use std::alloc::Layout;
+
+/// Whether an option's payload is itself an option (after resolving aliases).
+fn option_is_nested(ty: WitOption) -> bool {
+    let mut inner = ty.ty();
+    loop {
+        match inner {
+            Type::Option(_) => return true,
+            Type::Alias(alias) => inner = alias.ty(),
+            _ => return false,
+        }
+    }
+}
 
 /// Pop a value from the stack, restore it in the current JS context, and transform it.
 fn pop_with<R: 'static>(cx: &mut QjsCallContext, f: impl FnOnce(Value<'_>) -> R) -> R {
@@ -31,6 +43,23 @@ fn push_with(cx: &mut QjsCallContext, f: impl for<'js> FnOnce(&rquickjs::Ctx<'js
         let v = f(ctx);
         cx.push_value(ctx, v);
     });
+}
+
+/// Assign the imported resource prototype
+fn set_imported_prototype<'js>(
+    ctx: &rquickjs::Ctx<'js>,
+    obj: &rquickjs::Object<'js>,
+    ty: Resource,
+) {
+    let Some(proto) = ctx.resource_classes().prototype(ty.index()) else {
+        return;
+    };
+    let Ok(proto_val) = proto.restore(ctx) else {
+        return;
+    };
+    if let Some(proto_obj) = proto_val.into_object() {
+        let _ = obj.set_prototype(Some(&proto_obj));
+    }
 }
 
 /// Extract a TypedArray<T> and memcpy its bytes into a new buffer.
@@ -188,12 +217,24 @@ impl Call for QjsCallContext {
         self.stack.pop().expect("stack underflow");
     }
 
-    fn pop_option(&mut self, _ty: WitOption) -> u32 {
+    fn pop_option(&mut self, ty: WitOption) -> u32 {
         let persistent = self.stack.pop().expect("stack underflow");
 
         with_ctx(|ctx| {
             let val = persistent.restore(ctx).unwrap();
-            if val.is_null() || val.is_undefined() {
+
+            if option_is_nested(ty) {
+                // Nested option: { tag: "some", val } | { tag: "none" }.
+                let obj = val.as_object().expect("expected nested option object");
+                let tag: String = obj.get("tag").expect("expected tag");
+                if tag == "some" {
+                    let inner: Value = obj.get("val").unwrap_or(Value::new_undefined(ctx.clone()));
+                    self.stack.push(Persistent::save(ctx, inner));
+                    1
+                } else {
+                    0
+                }
+            } else if val.is_null() || val.is_undefined() {
                 0
             } else {
                 self.stack.push(Persistent::save(ctx, val));
@@ -231,11 +272,17 @@ impl Call for QjsCallContext {
         with_ctx(|ctx| {
             let val = persistent.restore(ctx).unwrap();
             let obj = val.as_object().expect("expected object");
-            let tag: u32 = obj.get("tag").expect("expected tag");
+            let tag: String = obj.get("tag").expect("expected tag");
+
+            let index = ty
+                .cases()
+                .position(|(name, _)| tag == name)
+                .unwrap_or_else(|| panic!("unknown variant case: {tag}"))
+                as u32;
 
             let has_payload = ty
                 .cases()
-                .nth(tag as usize)
+                .nth(index as usize)
                 .map(|(_, case_ty)| case_ty.is_some())
                 .unwrap_or(false);
 
@@ -243,16 +290,41 @@ impl Call for QjsCallContext {
                 let inner: Value = obj.get("val").unwrap_or(Value::new_undefined(ctx.clone()));
                 self.stack.push(Persistent::save(ctx, inner));
             }
-            tag
+            index
         })
     }
 
-    fn pop_enum(&mut self, _ty: Enum) -> u32 {
-        pop_with(self, |v| v.get().expect("expected number"))
+    fn pop_enum(&mut self, ty: Enum) -> u32 {
+        let persistent = self.pop_persistent();
+        with_ctx(|ctx| {
+            let name: String = persistent
+                .restore(ctx)
+                .unwrap()
+                .get()
+                .expect("expected enum string");
+            ty.names()
+                .position(|n| name == n)
+                .unwrap_or_else(|| panic!("unknown enum case: {name}")) as u32
+        })
     }
 
-    fn pop_flags(&mut self, _ty: Flags) -> u32 {
-        pop_with(self, |v| v.get().expect("expected number"))
+    fn pop_flags(&mut self, ty: Flags) -> u32 {
+        let persistent = self.pop_persistent();
+        with_ctx(|ctx| {
+            let val = persistent.restore(ctx).unwrap();
+            let obj = val.as_object().expect("expected flags object");
+            let mut bits = 0u32;
+            for (i, name) in ty.names().enumerate() {
+                let set = obj
+                    .get::<_, Coerced<bool>>(fn_lookup(ctx, name))
+                    .map(|c| c.0)
+                    .unwrap_or(false);
+                if set {
+                    bits |= 1 << i;
+                }
+            }
+            bits
+        })
     }
 
     fn pop_borrow(&mut self, ty: Resource) -> u32 {
@@ -413,8 +485,22 @@ impl Call for QjsCallContext {
         });
     }
 
-    fn push_option(&mut self, _ty: WitOption, is_some: bool) {
-        if !is_some {
+    fn push_option(&mut self, ty: WitOption, is_some: bool) {
+        if option_is_nested(ty) {
+            // Nested option: wrap so `none` and `some(none)` stay distinct.
+            let inner = if is_some { self.stack.pop() } else { None };
+            with_ctx(|ctx| {
+                let obj = rquickjs::Object::new(ctx.clone()).unwrap();
+                if let Some(inner) = inner {
+                    obj.set("tag", "some").unwrap();
+                    obj.set("val", inner.restore(ctx).unwrap()).unwrap();
+                } else {
+                    obj.set("tag", "none").unwrap();
+                }
+                self.stack.push(Persistent::save(ctx, obj.into_value()));
+            });
+        } else if !is_some {
+            // Bare option: `none` is null; `some(v)` leaves `v` on the stack.
             push_with(self, |ctx| Value::new_null(ctx.clone()));
         }
     }
@@ -439,17 +525,17 @@ impl Call for QjsCallContext {
     }
 
     fn push_variant(&mut self, ty: Variant, tag: u32) {
-        let has_payload = ty
+        let (name, payload_ty) = ty
             .cases()
             .nth(tag as usize)
-            .map(|(_, ty)| ty.is_some())
-            .unwrap_or(false);
+            .expect("variant tag out of range");
+        let has_payload = payload_ty.is_some();
 
         let inner = if has_payload { self.stack.pop() } else { None };
 
         with_ctx(|ctx| {
             let obj = rquickjs::Object::new(ctx.clone()).unwrap();
-            obj.set("tag", tag).unwrap();
+            obj.set("tag", name).unwrap();
             if let Some(val) = inner {
                 obj.set("val", val.restore(ctx).unwrap()).unwrap();
             }
@@ -457,12 +543,23 @@ impl Call for QjsCallContext {
         });
     }
 
-    fn push_enum(&mut self, _ty: Enum, val: u32) {
-        push_with(self, |ctx| val.into_js(ctx).unwrap());
+    fn push_enum(&mut self, ty: Enum, val: u32) {
+        let name = ty
+            .names()
+            .nth(val as usize)
+            .expect("enum index out of range");
+        push_with(self, move |ctx| name.into_js(ctx).unwrap());
     }
 
-    fn push_flags(&mut self, _ty: Flags, val: u32) {
-        push_with(self, |ctx| val.into_js(ctx).unwrap());
+    fn push_flags(&mut self, ty: Flags, val: u32) {
+        with_ctx(|ctx| {
+            let obj = rquickjs::Object::new(ctx.clone()).unwrap();
+            for (i, name) in ty.names().enumerate() {
+                obj.set(fn_lookup(ctx, name), (val & (1 << i)) != 0)
+                    .unwrap();
+            }
+            self.stack.push(Persistent::save(ctx, obj.into_value()));
+        });
     }
 
     fn push_borrow(&mut self, ty: Resource, handle: u32) {
@@ -478,6 +575,7 @@ impl Call for QjsCallContext {
 
                 let obj = rquickjs::Object::new(ctx.clone()).unwrap();
                 obj.set("__cqjs_handle", handle).unwrap();
+                set_imported_prototype(ctx, &obj, ty);
                 obj.into_value()
             };
             self.push_value(ctx, val);
@@ -496,6 +594,7 @@ impl Call for QjsCallContext {
             } else {
                 let obj = rquickjs::Object::new(ctx.clone()).unwrap();
                 obj.set("__cqjs_handle", handle).unwrap();
+                set_imported_prototype(ctx, &obj, ty);
                 obj.into_value()
             };
             self.push_value(ctx, val);

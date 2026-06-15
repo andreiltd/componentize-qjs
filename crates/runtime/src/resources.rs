@@ -5,12 +5,12 @@
 //! that back them.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 
 use rquickjs::{JsLifetime, Persistent, Value};
 use wit_dylib_ffi::Resource;
 
 use crate::CtxExt;
+use crate::DetHashMap;
 
 /// A borrowed imported resource handle that must be dropped when the call ends.
 pub(crate) struct BorrowedResource {
@@ -26,7 +26,7 @@ pub(crate) struct ResourceTable {
 
 #[derive(Default)]
 struct Inner {
-    map: HashMap<usize, Persistent<Value<'static>>>,
+    map: DetHashMap<usize, Persistent<Value<'static>>>,
     next_rep: usize,
 }
 
@@ -57,6 +57,51 @@ impl ResourceTable {
             .map
             .remove(&rep)
             .expect("resource not found")
+    }
+}
+
+/// Per-resource JS "class" (constructor + prototype) for imported resources.
+#[derive(Default, JsLifetime)]
+pub(crate) struct ResourceClasses {
+    inner: RefCell<ClassInner>,
+}
+
+#[derive(Default)]
+struct ClassInner {
+    map: DetHashMap<usize, ResourceClass>,
+}
+
+struct ResourceClass {
+    class: Persistent<Value<'static>>,
+    prototype: Persistent<Value<'static>>,
+}
+
+impl ResourceClasses {
+    /// Register a resource's class and prototype by `Resource::index()`.
+    pub(crate) fn insert(
+        &self,
+        index: usize,
+        class: Persistent<Value<'static>>,
+        prototype: Persistent<Value<'static>>,
+    ) {
+        self.inner
+            .borrow_mut()
+            .map
+            .insert(index, ResourceClass { class, prototype });
+    }
+
+    /// Get the class (constructor) for a resource, if any.
+    pub(crate) fn class(&self, index: usize) -> Option<Persistent<Value<'static>>> {
+        self.inner.borrow().map.get(&index).map(|c| c.class.clone())
+    }
+
+    /// Get the prototype object for a resource, if any.
+    pub(crate) fn prototype(&self, index: usize) -> Option<Persistent<Value<'static>>> {
+        self.inner
+            .borrow()
+            .map
+            .get(&index)
+            .map(|c| c.prototype.clone())
     }
 }
 

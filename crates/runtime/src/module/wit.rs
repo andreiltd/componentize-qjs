@@ -2,14 +2,13 @@
 
 use std::cell::RefCell;
 
-use heck::{ToLowerCamelCase, ToUpperCamelCase};
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::module::Declared;
 use rquickjs::module::{Declarations, Exports, ModuleDef};
 use rquickjs::{Ctx, Error, Module};
 use wit_dylib_ffi::Wit;
 
-use crate::wit_imports::{WitInterface, partition_imports};
+use crate::wit_imports::{WitInterface, interface_member_names, partition_imports};
 use crate::{CtxExt, bindings, with_ctx};
 
 /// Transient state used while declaring native WIT import modules.
@@ -143,34 +142,7 @@ fn declare_import_module<'js>(
 }
 
 fn export_names(iface: &WitInterface) -> Vec<String> {
-    let mut names = Vec::new();
-
-    names.extend(
-        iface
-            .funcs
-            .iter()
-            .map(|func| func.name().to_lower_camel_case()),
-    );
-    names.extend(
-        iface
-            .flags
-            .iter()
-            .map(|flags| flags.name().to_upper_camel_case()),
-    );
-    names.extend(
-        iface
-            .enums
-            .iter()
-            .map(|enum_ty| enum_ty.name().to_upper_camel_case()),
-    );
-    names.extend(
-        iface
-            .variants
-            .iter()
-            .map(|variant| variant.name().to_upper_camel_case()),
-    );
-
-    names
+    interface_member_names(iface)
 }
 
 fn freeze<'js>(ctx: &Ctx<'js>, obj: rquickjs::Object<'js>) -> rquickjs::Result<()> {

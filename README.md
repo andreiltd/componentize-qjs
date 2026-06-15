@@ -190,13 +190,33 @@ export function doubleAdd(a, b) {
 | `list<T>` | `Array` | `[1, 2, 3]` |
 | `list<u8>` | `Uint8Array` or `Array` | `new Uint8Array([1, 2, 3])` |
 | `tuple<T, U, ...>` | `Array` | `[42, "hello"]` |
-| `option<T>` | `T \| null \| undefined` | `null` for none |
+| `option<T>` | `T \| null` (nested: `{ tag: "some"\|"none", val }`) | `null` for none; `option<option<T>>` is wrapped |
 | `result<T, E>` | `{ tag: "ok"\|"err", val?: T\|E }` | `{ tag: "ok", val: 42 }` |
 | `record { ... }` | `object` (camelCase keys) | `{ myField: 1 }` |
-| `variant` | `{ tag: number, val?: T }` | `{ tag: 0, val: "hi" }` |
-| `enum` | `number` | Lookup tables provided on the interface |
-| `flags` | `number` (bitmask) | Bit constants provided on the interface |
-| `own<R>`, `borrow<R>` | `number` (handle) | Opaque resource handle |
+| `variant` | `{ tag: string, val?: T }` | `{ tag: "circle", val: 2.5 }` |
+| `enum` | `string` (case name) | `"red"` |
+| `flags` | `object` (camelCase booleans) | `{ read: true, write: false }` |
+| `own<R>`, `borrow<R>` | resource object (methods on its prototype) | `input.blockingRead(n)` |
+
+### Imported Resources
+
+Imported resources are exposed as JavaScript classes. Resource methods are
+called on the handle:
+
+```js
+import stdin from "wasi:cli/stdin@0.2.10";
+import stdout from "wasi:cli/stdout@0.2.10";
+
+const input = stdin.getStdin();     // an InputStream
+const output = stdout.getStdout();  // an OutputStream
+
+// Methods return WIT result<...> values as { tag, val }.
+const chunk = input.blockingRead(4096);   // method on the resource (len is a number)
+output.blockingWriteAndFlush(chunk.val);
+```
+
+`[static]` methods are exposed on the resource class and `[constructor]` makes
+the class callable with `new`.
 
 ### Async Exports
 

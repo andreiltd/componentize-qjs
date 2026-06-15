@@ -1,27 +1,140 @@
 //! WIT to/from JS binding registration.
-use std::collections::HashMap;
-
 use heck::{ToLowerCamelCase, ToUpperCamelCase};
 use rquickjs::Persistent;
 use rquickjs::function;
-use rquickjs::function::Rest;
-use rquickjs::{Ctx, Function, Value};
-use wit_dylib_ffi::Wit;
+use rquickjs::function::{Constructor, Rest, This};
+use rquickjs::{Ctx, Function, Object, Value};
+use smallvec::SmallVec;
+use wit_dylib_ffi::{Resource, Wit};
 
 use crate::CtxExt;
 use crate::futures::{make_future, register_future_classes};
 use crate::streams::{make_stream, register_stream_classes};
 use crate::task::Pending;
 use crate::trivia::iface_lookup;
-use crate::wit_imports::{WitInterface, root_bindings};
-use crate::{QjsCallContext, coerce_fn};
+use crate::wit_imports::{FuncKind, WitInterface, classify, find_resource, root_bindings};
+use crate::{DetHashSet, DetIndexMap, QjsCallContext, coerce_fn};
 
 /// Register all wit bindings on the js global scope.
 pub(crate) fn register(ctx: &rquickjs::Ctx<'_>, wit_def: Wit) -> rquickjs::Result<()> {
     register_stream_classes(ctx)?;
     register_future_classes(ctx)?;
+    register_resource_classes(ctx, wit_def)?;
     register_root_imports(ctx, wit_def)?;
     register_cqjs_namespace(ctx, wit_def)?;
+    Ok(())
+}
+
+/// Build a JS "class" (constructor + prototype) for every imported resource.
+fn register_resource_classes<'js>(ctx: &Ctx<'js>, wit: Wit) -> rquickjs::Result<()> {
+    struct Group {
+        resource: Resource,
+        ctor: Option<usize>,
+        methods: Vec<(&'static str, usize)>,
+        statics: Vec<(&'static str, usize)>,
+    }
+
+    let mut groups: DetIndexMap<usize, Group> = DetIndexMap::default();
+
+    for func in wit.iter_import_funcs() {
+        let kind = classify(func.name());
+        let resource_name = match kind {
+            FuncKind::Freestanding => continue,
+            FuncKind::Constructor { resource }
+            | FuncKind::Method { resource, .. }
+            | FuncKind::Static { resource, .. } => resource,
+        };
+
+        let Some(resource) = find_resource(wit, func.interface(), resource_name) else {
+            continue;
+        };
+
+        // Only imported resources get host-backed classes; exported (JS-backed)
+        // resources have a `rep` and are handled on the export side.
+        if resource.rep().is_some() {
+            continue;
+        }
+
+        let group = groups.entry(resource.index()).or_insert_with(|| Group {
+            resource,
+            ctor: None,
+            methods: Vec::new(),
+            statics: Vec::new(),
+        });
+
+        match kind {
+            FuncKind::Constructor { .. } => group.ctor = Some(func.index()),
+            FuncKind::Method { method, .. } => group.methods.push((method, func.index())),
+            FuncKind::Static { method, .. } => group.statics.push((method, func.index())),
+            FuncKind::Freestanding => unreachable!(),
+        }
+    }
+
+    let mut built: Vec<(
+        usize,
+        Persistent<Value<'static>>,
+        Persistent<Value<'static>>,
+    )> = Vec::new();
+
+    for (index, group) in groups {
+        let prototype = Object::new(ctx.clone())?;
+        for (method, func_index) in group.methods {
+            let js_func = Function::new(
+                ctx.clone(),
+                move |this: This<Value<'js>>, ctx: Ctx<'js>, args: Rest<Value<'js>>| {
+                    let mut call_args: SmallVec<[Value<'js>; 8]> =
+                        SmallVec::with_capacity(args.0.len() + 1);
+                    call_args.push(this.0);
+                    call_args.extend(args.0);
+                    call_import(ctx, func_index, call_args)
+                },
+            )?;
+            prototype.set(method.to_lower_camel_case(), js_func)?;
+        }
+
+        let class: Constructor = match group.ctor {
+            Some(func_index) => Constructor::new_prototype(
+                ctx,
+                prototype.clone(),
+                move |ctx: Ctx<'js>, args: Rest<Value<'js>>| {
+                    call_import(ctx, func_index, SmallVec::from_vec(args.0))
+                },
+            )?,
+            None => {
+                let resource_name = group.resource.name();
+                Constructor::new_prototype(
+                    ctx,
+                    prototype.clone(),
+                    move |ctx: Ctx<'js>, _args: Rest<Value<'js>>| -> rquickjs::Result<Value<'js>> {
+                        Err(rquickjs::Exception::throw_type(
+                            &ctx,
+                            &format!("{resource_name} has no constructor"),
+                        ))
+                    },
+                )?
+            }
+        };
+
+        for (method, func_index) in group.statics {
+            let js_func =
+                Function::new(ctx.clone(), move |ctx: Ctx<'js>, args: Rest<Value<'js>>| {
+                    call_import(ctx, func_index, SmallVec::from_vec(args.0))
+                })?;
+            class.set(method.to_lower_camel_case(), js_func)?;
+        }
+
+        built.push((
+            index,
+            Persistent::save(ctx, class.into_value()),
+            Persistent::save(ctx, prototype.into_value()),
+        ));
+    }
+
+    let registry = ctx.resource_classes();
+    for (index, class, prototype) in built {
+        registry.insert(index, class, prototype);
+    }
+
     Ok(())
 }
 
@@ -33,45 +146,34 @@ pub(crate) fn interface_to_js<'js>(
 ) -> rquickjs::Result<rquickjs::Object<'js>> {
     let obj = rquickjs::Object::new(ctx.clone())?;
 
-    for flags in &iface.flags {
-        let flags_obj = rquickjs::Object::new(ctx.clone())?;
-        for (i, name) in flags.names().enumerate() {
-            flags_obj.set(name.to_upper_camel_case(), 1u32 << i)?;
-        }
-        obj.set(flags.name().to_upper_camel_case(), flags_obj)?;
-    }
-
-    for enum_ty in &iface.enums {
-        let enum_obj = rquickjs::Object::new(ctx.clone())?;
-        for (i, name) in enum_ty.names().enumerate() {
-            let i = i as u32;
-            enum_obj.set(name.to_upper_camel_case(), i)?;
-            enum_obj.set(i, name)?;
-        }
-        obj.set(enum_ty.name().to_upper_camel_case(), enum_obj)?;
-    }
-
-    for variant in &iface.variants {
-        let variant_obj = rquickjs::Object::new(ctx.clone())?;
-        for (i, (name, _payload_ty)) in variant.cases().enumerate() {
-            let tag = i as u32;
-            let camel = name.to_upper_camel_case();
-            variant_obj.set(camel.as_str(), tag)?;
-            variant_obj.set(tag, name)?;
-        }
-        obj.set(variant.name().to_upper_camel_case(), variant_obj)?;
-    }
-
+    let mut seen_resources: DetHashSet<usize> = DetHashSet::default();
     for func in &iface.funcs {
-        let func_name = func.name().to_lower_camel_case();
-        let func_index = func.index();
-        let js_func = rquickjs::Function::new(
-            ctx.clone(),
-            move |ctx: rquickjs::Ctx<'js>, args: Rest<Value<'js>>| {
-                call_import(ctx, func_index, args.0)
-            },
-        )?;
-        obj.set(func_name, js_func)?;
+        match classify(func.name()) {
+            FuncKind::Freestanding => {
+                let func_name = func.name().to_lower_camel_case();
+                let func_index = func.index();
+                let js_func = rquickjs::Function::new(
+                    ctx.clone(),
+                    move |ctx: rquickjs::Ctx<'js>, args: Rest<Value<'js>>| {
+                        call_import(ctx, func_index, SmallVec::from_vec(args.0))
+                    },
+                )?;
+                obj.set(func_name, js_func)?;
+            }
+            FuncKind::Constructor { resource }
+            | FuncKind::Method { resource, .. }
+            | FuncKind::Static { resource, .. } => {
+                let Some(res) = find_resource(ctx.wit(), func.interface(), resource) else {
+                    continue;
+                };
+                if !seen_resources.insert(res.index()) {
+                    continue;
+                }
+                if let Some(class) = ctx.resource_classes().class(res.index()) {
+                    obj.set(resource.to_upper_camel_case(), class.restore(ctx)?)?;
+                }
+            }
+        }
     }
 
     Ok(obj)
@@ -93,7 +195,7 @@ fn register_root_imports(ctx: &rquickjs::Ctx<'_>, wit_def: Wit) -> rquickjs::Res
 fn call_import<'js>(
     ctx: rquickjs::Ctx<'js>,
     func_index: usize,
-    args: Vec<Value<'js>>,
+    args: SmallVec<[Value<'js>; 8]>,
 ) -> rquickjs::Result<Value<'js>> {
     let wit_def = ctx.wit();
     let func = wit_def.import_func(func_index);
@@ -150,7 +252,9 @@ fn build_async_exports<'js>(
     wit_def: Wit,
 ) -> rquickjs::Result<rquickjs::Object<'js>> {
     let exports = rquickjs::Object::new(ctx.clone())?;
-    let mut iface_objs: HashMap<String, rquickjs::Object<'_>> = HashMap::new();
+    // Insertion-ordered so the resulting object's property order is deterministic
+    // (and follows WIT declaration order) for a reproducible Wizer snapshot.
+    let mut iface_objs: DetIndexMap<String, rquickjs::Object<'_>> = DetIndexMap::default();
 
     for (func_index, func) in wit_def.iter_export_funcs().enumerate() {
         let func_name = func.name().to_lower_camel_case();

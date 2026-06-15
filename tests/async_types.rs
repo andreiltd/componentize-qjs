@@ -1470,9 +1470,9 @@ async fn test_async_variant_mixed_payloads() {
         .script(
             r#"
             export async function process(kind) {
-                if (kind === 0) return { tag: 0 };
-                if (kind === 1) return { tag: 1, val: "hello" };
-                return { tag: 2, val: 42 };
+                if (kind === 0) return { tag: "empty" };
+                if (kind === 1) return { tag: "message", val: "hello" };
+                return { tag: "code", val: 42 };
             }
             "#,
         )

@@ -12,7 +12,7 @@ mod trivia;
 mod wit_imports;
 
 use std::cell::{Cell, OnceCell, RefCell};
-use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use rquickjs::runtime::UserDataGuard;
@@ -23,8 +23,16 @@ use wit_dylib_ffi::Wit;
 
 use crate::interpreter::WitData;
 use crate::resources::BorrowedResource;
+use crate::resources::ResourceClasses;
 use crate::resources::ResourceTable;
 use crate::trivia::*;
+
+/// Deterministic, fixed-seed hash map/set used everywhere in the runtime so the
+/// wizer snapshot is reproducible.
+pub(crate) type DetHasher = core::hash::BuildHasherDefault<DefaultHasher>;
+pub(crate) type DetHashMap<K, V> = std::collections::HashMap<K, V, DetHasher>;
+pub(crate) type DetHashSet<T> = std::collections::HashSet<T, DetHasher>;
+pub(crate) type DetIndexMap<K, V> = indexmap::IndexMap<K, V, DetHasher>;
 
 // Generate bindings for the init interface for wizer
 mod init {
@@ -69,6 +77,9 @@ pub(crate) trait CtxExt<'js> {
     /// Retrieve the exported resource table.
     fn resources(&self) -> UserDataGuard<'_, ResourceTable>;
 
+    /// Retrieve the imported resource class/prototype registry.
+    fn resource_classes(&self) -> UserDataGuard<'_, ResourceClasses>;
+
     /// Retrieve the function/interface name cache.
     fn fns(&self) -> UserDataGuard<'_, FnNameCache>;
 
@@ -90,6 +101,10 @@ impl<'js> CtxExt<'js> for rquickjs::Ctx<'js> {
 
     fn resources(&self) -> UserDataGuard<'_, ResourceTable> {
         self.userdata().expect("ResourceTable not initialized")
+    }
+
+    fn resource_classes(&self) -> UserDataGuard<'_, ResourceClasses> {
+        self.userdata().expect("ResourceClasses not initialized")
     }
 
     fn fns(&self) -> UserDataGuard<'_, FnNameCache> {
@@ -219,7 +234,7 @@ impl Drop for QjsCallContext {
 /// Cache for converting WIT function/interface names to camelCase, stored as
 /// rquickjs userdata so it is tied to the JS runtime lifetime.
 #[derive(Default, JsLifetime)]
-pub(crate) struct FnNameCache(RefCell<HashMap<&'static str, &'static str>>);
+pub(crate) struct FnNameCache(RefCell<DetHashMap<&'static str, &'static str>>);
 
 /// Initialize the quickjs runtime with JavaScript source code.
 /// This is called by Wizer during pre-initialization.

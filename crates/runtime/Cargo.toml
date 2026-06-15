@@ -18,6 +18,7 @@ wit-dylib-ffi = { version = "0.1.0", git = "https://github.com/bytecodealliance/
 heck = "0.5"
 num_enum = { version = "0.7", default-features = false }
 smallvec = "1"
+indexmap = { version = "2", default-features = false }
 
 [features]
 default = ["component-model-async"]

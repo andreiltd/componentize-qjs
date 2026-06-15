@@ -72,7 +72,7 @@ fn test_export_only_interface_is_not_importable() {
 
             export const exported = {
                 ping() {
-                    return Color.Red === 0;
+                    return true;
                 },
             };
         "#,
@@ -419,7 +419,7 @@ fn test_char_type() {
 
 #[test]
 fn test_enum_type() {
-    // Enums are represented as numeric discriminants (0, 1, 2, ...) in JS
+    // Enums are represented as their case-name strings in JS
     TestCase::new()
         .wit(
             r#"
@@ -434,12 +434,12 @@ fn test_enum_type() {
         .script(
             r#"
             export function identifyColor(c) {
-                if (c === 0) return "is red";
-                if (c === 1) return "is green";
-                if (c === 2) return "is blue";
+                if (c === "red") return "is red";
+                if (c === "green") return "is green";
+                if (c === "blue") return "is blue";
                 return "unknown";
             }
-            export function favoriteColor() { return 1; }
+            export function favoriteColor() { return "green"; }
         "#,
         )
         .expect_call(
@@ -460,7 +460,7 @@ fn test_enum_type() {
 
 #[test]
 fn test_variant_type() {
-    // Variants use numeric tags (0, 1, ...) and {tag, val} objects in JS
+    // Variants are { tag: case-name, val } objects in JS
     TestCase::new()
         .wit(
             r#"
@@ -475,11 +475,11 @@ fn test_variant_type() {
         .script(
             r#"
             export function describeShape(s) {
-                if (s.tag === 0) return "circle with radius " + s.val;
-                if (s.tag === 1) return "no shape";
+                if (s.tag === "circle") return "circle with radius " + s.val;
+                if (s.tag === "none") return "no shape";
                 return "unknown";
             }
-            export function makeCircle(r) { return { tag: 0, val: r }; }
+            export function makeCircle(r) { return { tag: "circle", val: r }; }
         "#,
         )
         .expect_call(
@@ -507,7 +507,7 @@ fn test_variant_type() {
 
 #[test]
 fn test_flag_type() {
-    // Flags are represented as bitmask numbers in JS
+    // Flags are represented as { name: boolean } objects in JS
     TestCase::new()
         .wit(
             r#"
@@ -520,7 +520,7 @@ fn test_flag_type() {
         "#,
         )
         .script(
-            "export function checkRead(p) { return (p & 1) !== 0; }\nexport function readWrite() { return 3; }",
+            "export function checkRead(p) { return p.read === true; }\nexport function readWrite() { return { read: true, write: true }; }",
         )
         .expect_call(
             "check-read",
@@ -835,23 +835,26 @@ fn test_deeply_nested_lists() {
 
 #[test]
 fn test_nested_option() {
-    // option<option<u32>>
+    // option<option<u32>> is wrapped as { tag: "some"|"none", val } so that
+    // none, some(none), and some(some(v)) stay distinct.
     TestCase::new()
         .wit(
             r#"
             package test:nested-option;
             world nested-option {
                 export unwrap-nested: func(val: option<option<u32>>) -> u32;
+                export identity: func(val: option<option<u32>>) -> option<option<u32>>;
             }
         "#,
         )
         .script(
             r#"
             export function unwrapNested(val) {
-                if (val === null || val === undefined) return 0;
-                if (val === null || val === undefined) return 0;
-                return val;
+                if (val.tag === "none") return 0;
+                if (val.val === null || val.val === undefined) return 0;
+                return val.val;
             }
+            export function identity(val) { return val; }
         "#,
         )
         .stub_wasi()
@@ -863,6 +866,25 @@ fn test_nested_option() {
             Val::U32(42),
         )
         .expect_call("unwrap-nested", vec![Val::Option(None)], Val::U32(0))
+        .expect_call(
+            "unwrap-nested",
+            vec![Val::Option(Some(Box::new(Val::Option(None))))],
+            Val::U32(0),
+        )
+        // identity must round-trip all three distinct cases unchanged.
+        .expect_call("identity", vec![Val::Option(None)], Val::Option(None))
+        .expect_call(
+            "identity",
+            vec![Val::Option(Some(Box::new(Val::Option(None))))],
+            Val::Option(Some(Box::new(Val::Option(None)))),
+        )
+        .expect_call(
+            "identity",
+            vec![Val::Option(Some(Box::new(Val::Option(Some(Box::new(
+                Val::U32(7),
+            ))))))],
+            Val::Option(Some(Box::new(Val::Option(Some(Box::new(Val::U32(7))))))),
+        )
         .build()
         .unwrap()
         .run();
@@ -931,7 +953,7 @@ fn test_list_of_variants() {
             export function countTexts(items) {
                 let count = 0;
                 for (const item of items) {
-                    if (item.tag === 0) count++;
+                    if (item.tag === "text") count++;
                 }
                 return count;
             }
@@ -1209,13 +1231,13 @@ fn test_variant_with_multiple_payload_types() {
         .script(
             r#"
             export function stringify(v) {
-                if (v.tag === 0) return "int:" + v.val;
-                if (v.tag === 1) return "text:" + v.val;
-                if (v.tag === 2) return "flag:" + v.val;
+                if (v.tag === "integer") return "int:" + v.val;
+                if (v.tag === "text") return "text:" + v.val;
+                if (v.tag === "flag") return "flag:" + v.val;
                 return "nothing";
             }
-            export function makeText(s) { return { tag: 1, val: s }; }
-            export function makeNothing() { return { tag: 3 }; }
+            export function makeText(s) { return { tag: "text", val: s }; }
+            export function makeNothing() { return { tag: "nothing" }; }
         "#,
         )
         .stub_wasi()
@@ -1795,9 +1817,9 @@ fn test_root_level_flags() {
             r#"
             export function check(p) {
                 const parts = [];
-                if (p & Permissions.Read) parts.push("read");
-                if (p & Permissions.Write) parts.push("write");
-                if (p & Permissions.Execute) parts.push("execute");
+                if (p.read) parts.push("read");
+                if (p.write) parts.push("write");
+                if (p.execute) parts.push("execute");
                 return parts.join(",");
             }
             "#,
@@ -1807,7 +1829,7 @@ fn test_root_level_flags() {
 
     let mut instance = result.expect(
         "componentization should succeed for world-level flags — \
-         if this fails, partition_imports is dropping root-level types",
+         world-level flags must round-trip as { name: boolean } objects",
     );
 
     let flags_val = Val::Flags(vec!["read".into(), "execute".into()]);
