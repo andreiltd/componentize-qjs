@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/andreiltd/componentize-qjs/compare/v0.3.0...v0.4.0) - 2026-06-16
+
+### Bug Fixes
+
+- allow unknown imports during wizening ([#48](https://github.com/andreiltd/componentize-qjs/pull/48))
+- *(deps)* update rust dependencies ([#43](https://github.com/andreiltd/componentize-qjs/pull/43))
+- transfer owned WIT u8/s8 raw lists directly into TypedArray ([#46](https://github.com/andreiltd/componentize-qjs/pull/46))
+- preserve `this` binding when slicing ([#40](https://github.com/andreiltd/componentize-qjs/pull/40))
+- harden publish workflow
+
+### Features
+
+- [**breaking**] align top-level WIT result bindings with js throw semantics ([#47](https://github.com/andreiltd/componentize-qjs/pull/47))
+- add build time module resolver ([#45](https://github.com/andreiltd/componentize-qjs/pull/45))
+- [**breaking**] align bindings with jco ([#41](https://github.com/andreiltd/componentize-qjs/pull/41))
+
+### Miscellaneous
+
+- *(deps)* update github ci dependencies ([#44](https://github.com/andreiltd/componentize-qjs/pull/44))
+- *(deps)* update npm dependencies ([#42](https://github.com/andreiltd/componentize-qjs/pull/42))
+
 ## [0.3.0](https://github.com/andreiltd/componentize-qjs/compare/v0.2.2...v0.3.0) - 2026-06-09
 
 ### Bug Fixes
