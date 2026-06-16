@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/andreiltd/componentize-qjs/compare/componentize-qjs-v0.3.0...componentize-qjs-v0.4.0) - 2026-06-16
+
+### Bug Fixes
+
+- allow unknown imports during wizening ([#48](https://github.com/andreiltd/componentize-qjs/pull/48))
+- *(deps)* update rust dependencies ([#43](https://github.com/andreiltd/componentize-qjs/pull/43))
+- preserve `this` binding when slicing ([#40](https://github.com/andreiltd/componentize-qjs/pull/40))
+
+### Features
+
+- [**breaking**] align top-level WIT result bindings with js throw semantics ([#47](https://github.com/andreiltd/componentize-qjs/pull/47))
+- add build time module resolver ([#45](https://github.com/andreiltd/componentize-qjs/pull/45))
+- [**breaking**] align bindings with jco ([#41](https://github.com/andreiltd/componentize-qjs/pull/41))
+
 ## [0.3.0](https://github.com/andreiltd/componentize-qjs/compare/componentize-qjs-v0.2.2...componentize-qjs-v0.3.0) - 2026-06-09
 
 ### Bug Fixes
