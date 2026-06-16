@@ -315,6 +315,8 @@ async fn wizer_init(
     let comp = WasmtimeComponent::new(&engine, &instrumented)?;
 
     let mut linker = Linker::new(&engine);
+    linker.allow_shadowing(true);
+    linker.define_unknown_imports_as_traps(&comp)?;
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
     wasmtime_wasi::p3::add_to_linker(&mut linker)?;
     let instance = linker.instantiate_async(&mut store, &comp).await?;

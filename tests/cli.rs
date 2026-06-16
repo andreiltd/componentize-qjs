@@ -5,9 +5,11 @@ use std::fs;
 
 use predicates::prelude::*;
 use tempfile::TempDir;
-use wasmtime::component::Val;
+use wasmtime::Store;
+use wasmtime::component::{Component, Linker, ResourceTable, Val};
+use wasmtime_wasi::WasiCtxBuilder;
 
-use common::{ComponentInstance, componentize_qjs, run_cli_build};
+use common::{ComponentInstance, WasiCtxState, componentize_qjs, engine, run_cli_build};
 
 #[test]
 fn test_cli_help() {
@@ -77,6 +79,60 @@ fn test_cli_output() {
         ComponentInstance::from_wasm(wasm, vec![], vec![]).expect("should instantiate component");
 
     assert_eq!(inst.call1("add", &[Val::U32(3), Val::U32(4)]), Val::U32(7));
+}
+
+#[test]
+fn test_cli_defers_host_imports_until_runtime() {
+    let (output, _dir) = run_cli_build(
+        r#"
+            package local:test;
+
+            interface math {
+                add: func(a: s32, b: s32) -> s32;
+                multiply: func(a: s32, b: s32) -> s32;
+            }
+
+            world imports {
+                import math;
+                export double-add: func(a: s32, b: s32) -> s32;
+            }
+        "#,
+        r#"
+            import math from "local:test/math";
+
+            export function doubleAdd(a, b) {
+                const sum = math.add(a, b);
+                return math.multiply(sum, 2);
+            }
+        "#,
+        &[],
+    );
+
+    let engine = engine();
+    let component = Component::new(engine, fs::read(&output).unwrap()).unwrap();
+    let mut store = Store::new(
+        engine,
+        WasiCtxState {
+            wasi: WasiCtxBuilder::new().build(),
+            table: ResourceTable::new(),
+        },
+    );
+
+    let mut linker = Linker::new(engine);
+    wasmtime_wasi::p2::add_to_linker_sync(&mut linker).unwrap();
+    let mut math = linker.instance("local:test/math").unwrap();
+    math.func_wrap("add", |_, (a, b): (i32, i32)| Ok((a + b,)))
+        .unwrap();
+    math.func_wrap("multiply", |_, (a, b): (i32, i32)| Ok((a * b,)))
+        .unwrap();
+
+    let instance = linker.instantiate(&mut store, &component).unwrap();
+    let func = instance.get_func(&mut store, "double-add").unwrap();
+    let mut results = [Val::S32(0)];
+    func.call(&mut store, &[Val::S32(4), Val::S32(5)], &mut results)
+        .unwrap();
+
+    assert_eq!(results[0], Val::S32(18));
 }
 
 #[test]
