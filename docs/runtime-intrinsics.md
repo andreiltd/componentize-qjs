@@ -257,11 +257,16 @@ lowerCamelCase exported interface name.
 
 ### Result / Variant / Enum / Flags / Option Protocol
 
-WIT `result` and `variant` values are represented as plain objects with a
-string `tag`:
+Top-level function returns of WIT `result<T, E>` use JavaScript's exception
+convention: return the `ok` payload directly, or throw the `err` payload. When a
+WIT import returns `err`, JavaScript receives a thrown object with the payload on
+`error.payload`.
+
+Nested WIT `result` values and all `variant` values are represented as plain
+objects with a string `tag`:
 
 ```js
-// result<string, u32>
+// nested result<string, u32>
 { tag: "ok", val: "hello" }
 { tag: "err", val: 42 }
 

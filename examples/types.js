@@ -37,12 +37,13 @@ export function maybeDouble(n) {
     return n * 2;
 }
 
-// Result - {tag: "ok", val: ...} or {tag: "err", val: ...}
+// Top-level result returns use the JS exception convention:
+// return the ok payload, or throw the err payload.
 export function safeDivide(a, b) {
     if (b === 0) {
-        return { tag: "err", val: "division by zero" };
+        throw "division by zero";
     }
-    return { tag: "ok", val: Math.floor(a / b) };
+    return Math.floor(a / b);
 }
 
 // Enum - represented as its case-name string

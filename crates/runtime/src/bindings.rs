@@ -9,6 +9,7 @@ use wit_dylib_ffi::{Resource, Wit};
 
 use crate::CtxExt;
 use crate::futures::{make_future, register_future_classes};
+use crate::result::ResultBoundary;
 use crate::streams::{make_stream, register_stream_classes};
 use crate::task::Pending;
 use crate::trivia::iface_lookup;
@@ -200,46 +201,42 @@ fn call_import<'js>(
     let wit_def = ctx.wit();
     let func = wit_def.import_func(func_index);
 
+    let boundary = ResultBoundary::new(func.result());
     let mut call = QjsCallContext::default();
     for arg in args.into_iter().rev() {
         call.push_value(&ctx, arg);
     }
 
     if func.is_async() {
-        let (promise, resolve, _reject) = ctx.promise()?;
+        let (promise, resolve, reject) = ctx.promise()?;
 
         if let Some(pending) = unsafe { func.call_import_async(&mut call) } {
             let handle = pending.subtask;
             let buffer = pending.buffer;
 
             let resolve = Persistent::save(&ctx, resolve.into_value());
+            let reject = Persistent::save(&ctx, reject.into_value());
             let pending = Pending::ImportCall {
                 func_index,
                 call,
                 buffer,
                 resolve,
+                reject,
             };
             ctx.task().register(handle, pending);
         } else {
-            let result = func
-                .result()
-                .and_then(|_| call.maybe_pop_persistent())
-                .map(|p| p.restore(&ctx))
-                .transpose()?
-                .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
-
-            resolve
-                .call::<_, Value>((result,))
-                .expect("Failed to resolve async import");
+            boundary
+                .lift(&ctx, call.maybe_pop_value(&ctx)?)?
+                .settle(&resolve, &reject)
+                .expect("Failed to settle async import");
         }
 
         Ok(promise.into_value())
     } else {
         func.call_import_sync(&mut call);
-        match call.maybe_pop_persistent() {
-            Some(persistent) => persistent.restore(&ctx),
-            None => Ok(Value::new_undefined(ctx)),
-        }
+        boundary
+            .lift(&ctx, call.maybe_pop_value(&ctx)?)?
+            .into_result(&ctx)
     }
 }
 
@@ -299,8 +296,14 @@ fn build_async_exports<'js>(
                             .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
 
                         let func = ctx.wit().export_func(func_index);
+                        let boundary = ResultBoundary::new(func.result());
                         let mut call = QjsCallContext::default();
-                        if func.result().is_some() {
+
+                        let value = boundary.lower_value(&ctx, value).unwrap_or_else(|e| {
+                            panic!("Call failed '{}': {:?}", "async export", e)
+                        });
+
+                        if let Some(value) = value {
                             call.push_value(&ctx, value);
                         }
                         func.call_task_return(&mut call);
@@ -316,12 +319,19 @@ fn build_async_exports<'js>(
                             .into_iter()
                             .next()
                             .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
-                        let msg = reason
-                            .as_object()
-                            .and_then(|obj| obj.get::<_, rquickjs::String>("message").ok())
-                            .and_then(|s| s.to_string().ok())
-                            .unwrap_or_else(|| format!("{reason:?}"));
-                        panic!("async export rejected: {msg}");
+                        let func = ctx.wit().export_func(func_index);
+                        let boundary = ResultBoundary::new(func.result());
+                        let mut call = QjsCallContext::default();
+                        let value = boundary.lower_throw(&ctx, reason).unwrap_or_else(|e| {
+                            panic!("Call failed '{}': {:?}", "async export", e)
+                        });
+
+                        if let Some(value) = value {
+                            call.push_value(&ctx, value);
+                        }
+
+                        func.call_task_return(&mut call);
+                        Ok(Value::new_undefined(ctx))
                     }),
                 )?;
 

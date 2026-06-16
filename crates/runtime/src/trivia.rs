@@ -34,6 +34,21 @@ pub(crate) fn resolve_promise(
     });
 }
 
+pub(crate) fn reject_promise(
+    reject: Persistent<Value<'static>>,
+    reason: Persistent<Value<'static>>,
+) {
+    with_ctx(|ctx| {
+        let reject_val = reject.restore(ctx).unwrap();
+        let reject_fn = reject_val.get::<Function>().unwrap();
+        let reason_val = reason.restore(ctx).unwrap();
+
+        reject_fn
+            .call::<_, Value>((reason_val,))
+            .expect("Failed to reject promise");
+    });
+}
+
 /// Get `Symbol.for("dispose")` via the rquickjs API.
 pub(crate) fn symbol_dispose<'js>(ctx: &rquickjs::Ctx<'js>) -> Result<Atom<'js>> {
     Ok(Symbol::new_global(ctx.clone(), "dispose")?.as_atom())

@@ -3,6 +3,7 @@ use crate::CtxExt;
 use crate::abi::{CallbackCode, Event};
 use crate::bindings::register;
 use crate::resources::ResourceTable;
+use crate::result::ResultBoundary;
 use crate::task::TaskState;
 use crate::trivia::{fn_lookup, iface_lookup};
 use crate::{QjsCallContext, with_ctx};
@@ -52,6 +53,7 @@ impl Interpreter for QjsInterpreter {
                     .user_module()
                     .exports(ctx)
                     .expect("user module exports not found");
+
                 let ctor: Constructor = if let Some(iface) = func.interface() {
                     let iface_obj: rquickjs::Object = exports
                         .get(iface_lookup(ctx, iface))
@@ -64,6 +66,7 @@ impl Interpreter for QjsInterpreter {
                         .get(class_name.as_str())
                         .unwrap_or_else(|e| panic!("class '{}' not found: {:?}", class_name, e))
                 };
+
                 let args = cx.stack_into_args(ctx);
                 let instance: Value = ctor
                     .construct_args(args)
@@ -92,12 +95,13 @@ impl Interpreter for QjsInterpreter {
                 let mut args = cx.stack_into_args(ctx);
                 args.this(self_val).expect("failed to set this");
 
-                let result = method
-                    .call_arg::<Value>(args)
-                    .unwrap_or_else(|e| panic!("Failed to call '{}': {:?}", method_name, e));
+                let boundary = ResultBoundary::new(func.result());
+                let value = boundary
+                    .lower_call(ctx, method.call_arg::<Value>(args))
+                    .unwrap_or_else(|err| panic!("Failed to call '{}': {:?}", method_name, err));
 
-                if func.result().is_some() {
-                    cx.push_value(ctx, result);
+                if let Some(value) = value {
+                    cx.push_value(ctx, value);
                 }
             });
         } else if let Some(rest) = name.strip_prefix("[static]") {
@@ -114,6 +118,7 @@ impl Interpreter for QjsInterpreter {
                     .user_module()
                     .exports(ctx)
                     .expect("user module exports not found");
+
                 let class_obj: rquickjs::Object = if let Some(iface) = func.interface() {
                     let iface_obj: rquickjs::Object = exports
                         .get(iface_lookup(ctx, iface))
@@ -126,15 +131,19 @@ impl Interpreter for QjsInterpreter {
                         .get(class_name.as_str())
                         .unwrap_or_else(|e| panic!("class '{}' not found: {:?}", class_name, e))
                 };
+
                 let js_func: rquickjs::Function = class_obj.get(method_name).unwrap_or_else(|e| {
                     panic!("static method '{}' not found: {:?}", method_name, e)
                 });
+
                 let args = cx.stack_into_args(ctx);
-                let result = js_func
-                    .call_arg::<Value>(args)
-                    .unwrap_or_else(|e| panic!("Failed to call '{}': {:?}", method_name, e));
-                if func.result().is_some() {
-                    cx.push_value(ctx, result);
+                let boundary = ResultBoundary::new(func.result());
+                let value = boundary
+                    .lower_call(ctx, js_func.call_arg::<Value>(args))
+                    .unwrap_or_else(|err| panic!("Failed to call '{}': {:?}", method_name, err));
+
+                if let Some(value) = value {
+                    cx.push_value(ctx, value);
                 }
             });
         } else {
@@ -144,6 +153,7 @@ impl Interpreter for QjsInterpreter {
                     .user_module()
                     .exports(ctx)
                     .expect("user module exports not found");
+
                 let func_name = fn_lookup(ctx, name);
                 let js_func: rquickjs::Function = if let Some(iface) = func.interface() {
                     let iface_obj: rquickjs::Object = exports
@@ -157,13 +167,15 @@ impl Interpreter for QjsInterpreter {
                         panic!("Failed to get function '{}': {:?}", func_name, e)
                     })
                 };
-                let args = cx.stack_into_args(ctx);
-                let result = js_func
-                    .call_arg::<Value>(args)
-                    .unwrap_or_else(|e| panic!("Failed to call '{}': {:?}", func.name(), e));
 
-                if func.result().is_some() {
-                    cx.push_value(ctx, result);
+                let args = cx.stack_into_args(ctx);
+                let boundary = ResultBoundary::new(func.result());
+                let value = boundary
+                    .lower_call(ctx, js_func.call_arg::<Value>(args))
+                    .unwrap_or_else(|err| panic!("Failed to call '{}': {:?}", func.name(), err));
+
+                if let Some(value) = value {
+                    cx.push_value(ctx, value);
                 }
             });
         }

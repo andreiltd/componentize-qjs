@@ -228,9 +228,9 @@ async fn test_async_echo_result() {
             r#"
             export async function safeDivide(a, b) {
                 if (b === 0) {
-                    return { tag: "err", val: "division by zero" };
+                    throw "division by zero";
                 }
-                return { tag: "ok", val: a / b };
+                return a / b;
             }
             "#,
         )
@@ -1428,9 +1428,9 @@ async fn test_async_result_no_error_payload() {
             r#"
             export async function validate(x) {
                 if (x > 100) {
-                    return { tag: "err" };
+                    throw undefined;
                 }
-                return { tag: "ok", val: x * 2 };
+                return x * 2;
             }
             "#,
         )

@@ -15,7 +15,10 @@ export function echoListString(v) { return v; }
 export function echoRecord(v) { return v; }
 export function echoTuple(v) { return v; }
 export function echoOptionString(v) { return v; }
-export function echoResult(v) { return v; }
+export function echoResult(v) {
+    if (v.tag === "err") throw v.val;
+    return v.val;
+}
 export function echoVariant(v) { return v; }
 export function echoEnum(v) { return v; }
 export function echoFlags(v) { return v; }
