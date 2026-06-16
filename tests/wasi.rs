@@ -157,27 +157,25 @@ fn test_wasi_stdio() {
             import stdin from "wasi:cli/stdin@0.2.6";
             import stdout from "wasi:cli/stdout@0.2.6";
 
-            export function unwrap(result) {
-                if (result.tag === "ok") {
-                    return result.val;
-                }
-                throw new Error("WASI stream error: " + JSON.stringify(result.val));
-            }
-
             export function echoStdinToStdout() {
                 const input = stdin.getStdin();
                 const output = stdout.getStdout();
 
                 while (true) {
-                    const chunk = input.blockingRead(4096);
-                    if (chunk.tag === "err" && chunk.val.tag === "closed") {
-                        break;
+                    let chunk;
+                    try {
+                        chunk = input.blockingRead(4096);
+                    } catch (e) {
+                        if (e && e.payload && e.payload.tag === "closed") {
+                            break;
+                        }
+                        throw e;
                     }
 
-                    unwrap(output.blockingWriteAndFlush(unwrap(chunk)));
+                    output.blockingWriteAndFlush(chunk);
                 }
 
-                return { tag: "ok" };
+                return;
             }
         "#,
         )

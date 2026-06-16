@@ -6,6 +6,7 @@ mod futures;
 mod interpreter;
 mod module;
 mod resources;
+mod result;
 mod streams;
 mod task;
 mod trivia;
@@ -181,7 +182,7 @@ impl init::Guest for InitImpl {
 /// Call context for export/import invocations.
 #[derive(Default)]
 pub struct QjsCallContext {
-    /// Value stack for WIT to JS: arguments in, results out
+    /// Value stack for WIT to JS: arguments in, result out
     stack: Vec<Persistent<Value<'static>>>,
     /// Tracks current index per nested list iteration
     iter_stack: SmallVec<[usize; 4]>,
@@ -208,6 +209,15 @@ impl QjsCallContext {
 
     pub(crate) fn maybe_pop_persistent(&mut self) -> Option<Persistent<Value<'static>>> {
         self.stack.pop()
+    }
+
+    pub(crate) fn maybe_pop_value<'js>(
+        &mut self,
+        ctx: &rquickjs::Ctx<'js>,
+    ) -> rquickjs::Result<Option<Value<'js>>> {
+        self.maybe_pop_persistent()
+            .map(|persistent| persistent.restore(ctx))
+            .transpose()
     }
 
     pub(crate) fn stack_into_args<'js>(&mut self, ctx: &rquickjs::Ctx<'js>) -> function::Args<'js> {

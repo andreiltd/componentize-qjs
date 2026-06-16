@@ -199,7 +199,7 @@ a project root that contains shared files or `node_modules`.
 | `list<u8>` | `Uint8Array` or `Array` | `new Uint8Array([1, 2, 3])` |
 | `tuple<T, U, ...>` | `Array` | `[42, "hello"]` |
 | `option<T>` | `T \| null` (nested: `{ tag: "some"\|"none", val }`) | `null` for none; `option<option<T>>` is wrapped |
-| `result<T, E>` | `{ tag: "ok"\|"err", val?: T\|E }` | `{ tag: "ok", val: 42 }` |
+| `result<T, E>` | top-level function result: return `T` or throw `E`; nested result: `{ tag: "ok"\|"err", val?: T\|E }` | `return 42` / `throw "error"` |
 | `record { ... }` | `object` (camelCase keys) | `{ myField: 1 }` |
 | `variant` | `{ tag: string, val?: T }` | `{ tag: "circle", val: 2.5 }` |
 | `enum` | `string` (case name) | `"red"` |
@@ -218,9 +218,9 @@ import stdout from "wasi:cli/stdout@0.2.10";
 const input = stdin.getStdin();     // an InputStream
 const output = stdout.getStdout();  // an OutputStream
 
-// Methods return WIT result<...> values as { tag, val }.
+// Methods whose WIT return type is result<...> return the ok payload or throw.
 const chunk = input.blockingRead(4096);   // method on the resource (len is a number)
-output.blockingWriteAndFlush(chunk.val);
+output.blockingWriteAndFlush(chunk);
 ```
 
 `[static]` methods are exposed on the resource class and `[constructor]` makes

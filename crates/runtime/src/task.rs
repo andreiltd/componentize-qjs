@@ -9,6 +9,7 @@ use crate::CtxExt;
 use crate::DetHashMap;
 use crate::abi::*;
 use crate::buffer::BufferGuard;
+use crate::result::ResultBoundary;
 use crate::{QjsCallContext, resolve_promise, with_ctx};
 
 /// A pending async operation awaiting a callback event.
@@ -20,6 +21,7 @@ pub(crate) enum Pending {
         func_index: usize,
         buffer: *mut u8,
         resolve: Persistent<Value<'static>>,
+        reject: Persistent<Value<'static>>,
     },
     /// A stream write that blocked.
     StreamWrite {
@@ -160,6 +162,7 @@ pub(crate) fn handle_subtask(handle: u32, state: SubtaskState) {
                 func_index,
                 buffer,
                 resolve,
+                reject,
                 mut call,
             } = pending
             else {
@@ -169,8 +172,12 @@ pub(crate) fn handle_subtask(handle: u32, state: SubtaskState) {
             let func = with_ctx(|ctx| ctx.wit()).import_func(func_index);
             unsafe { func.lift_import_async_result(&mut call, buffer) };
 
-            let result = func.result().map(|_| call.pop_persistent());
-            resolve_promise(resolve, result);
+            with_ctx(|ctx| {
+                ResultBoundary::new(func.result())
+                    .lift(ctx, call.maybe_pop_value(ctx).unwrap())
+                    .unwrap()
+                    .settle_persistent(ctx, resolve, reject);
+            });
         }
         SubtaskState::CancelledBeforeStarted | SubtaskState::CancelledBeforeReturned => {
             let Pending::ImportCall { resolve, .. } = with_ctx(|ctx| ctx.task().take(handle))

@@ -225,8 +225,8 @@ fn test_result_type() {
         .script(
             r#"
             export function safeDiv(a, b) {
-                if (b === 0) { return { tag: "err", val: "division by zero" }; }
-                return { tag: "ok", val: Math.floor(a / b) };
+                if (b === 0) { throw "division by zero"; }
+                return Math.floor(a / b);
             }
         "#,
         )
@@ -415,6 +415,68 @@ fn test_char_type() {
         .build()
         .unwrap()
         .run();
+}
+
+#[test]
+fn test_result_throw_error_compatibility() {
+    const WIT: &str = r#"
+            package test:result-errors;
+            world result-errors {
+                type string-err = string;
+                export inline-string-error: func() -> result<_, string>;
+                export alias-string-error: func() -> result<_, string-err>;
+                export payload-error: func() -> result<_, u32>;
+                export plain-error-traps: func() -> result<_, u32>;
+            }
+        "#;
+    const SCRIPT: &str = r#"
+            export function inlineStringError() {
+                throw new Error("inline string error");
+            }
+
+            export function aliasStringError() {
+                throw new Error("alias string error");
+            }
+
+            export function payloadError() {
+                const error = new Error("ignored");
+                error.payload = 7;
+                throw error;
+            }
+
+            export function plainErrorTraps() {
+                throw new Error("not a u32 payload");
+            }
+        "#;
+
+    let build = || TestCase::new().wit(WIT).script(SCRIPT).build().unwrap();
+
+    let mut inst = build();
+    assert_eq!(
+        inst.call1("inline-string-error", &[]),
+        Val::Result(Err(Some(Box::new(Val::String(
+            "inline string error".into()
+        )))))
+    );
+    assert_eq!(
+        inst.call1("alias-string-error", &[]),
+        Val::Result(Err(Some(Box::new(Val::String(
+            "alias string error".into()
+        )))))
+    );
+    assert_eq!(
+        inst.call1("payload-error", &[]),
+        Val::Result(Err(Some(Box::new(Val::U32(7)))))
+    );
+
+    let mut inst = build();
+    let (instance, store) = inst.parts();
+    let func = instance
+        .get_func(&mut *store, "plain-error-traps")
+        .expect("plain-error-traps export not found");
+    let mut results = [Val::Bool(false)];
+    func.call(&mut *store, &[], &mut results)
+        .expect_err("ordinary Error should trap for non-string result errors");
 }
 
 #[test]
@@ -1100,9 +1162,9 @@ fn test_result_of_option() {
         .script(
             r#"
             export function maybeLookup(key) {
-                if (key === "found") return { tag: "ok", val: 42 };
-                if (key === "missing") return { tag: "ok", val: null };
-                return { tag: "err", val: "invalid key" };
+                if (key === "found") return 42;
+                if (key === "missing") return null;
+                throw "invalid key";
             }
         "#,
         )
@@ -1196,8 +1258,8 @@ fn test_multiple_return_results() {
         .script(
             r#"
             export function tryOp(succeed) {
-                if (succeed) return { tag: "ok", val: 42 };
-                return { tag: "err" };
+                if (succeed) return 42;
+                throw undefined;
             }
         "#,
         )
@@ -1444,9 +1506,9 @@ fn test_result_of_result() {
         .script(
             r#"
             export function tryNested(level) {
-                if (level === 0) return { tag: "err", val: "outer error" };
-                if (level === 1) return { tag: "ok", val: { tag: "err", val: "inner error" } };
-                return { tag: "ok", val: { tag: "ok", val: level * 10 } };
+                if (level === 0) throw "outer error";
+                if (level === 1) return { tag: "err", val: "inner error" };
+                return { tag: "ok", val: level * 10 };
             }
         "#,
         )

@@ -15,7 +15,10 @@ export async function echoListString(v) { return v; }
 export async function echoRecord(v) { return v; }
 export async function echoTuple(v) { return v; }
 export async function echoOptionString(v) { return v; }
-export async function echoResult(v) { return v; }
+export async function echoResult(v) {
+    if (v.tag === "err") throw v.val;
+    return v.val;
+}
 export async function echoVariant(v) { return v; }
 export async function echoEnum(v) { return v; }
 export async function echoFlags(v) { return v; }

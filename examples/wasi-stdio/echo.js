@@ -6,8 +6,11 @@ export const run = {
         const [input, status] = stdin.readViaStream();
         const written = await stdout.writeViaStream(input);
         if (written.tag === "err") {
-            return written;
+            throw written.val;
         }
-        return await status.read();
+        const statusResult = await status.read();
+        if (statusResult.tag === "err") {
+            throw statusResult.val;
+        }
     },
 };
