@@ -1,5 +1,5 @@
 //! ES module loading and evaluated user module state.
-mod fs;
+mod host;
 mod wit;
 
 use std::cell::RefCell;
@@ -12,8 +12,8 @@ pub(crate) use wit::WitImportDeclarations;
 
 pub(crate) fn install_loader(runtime: &Runtime) {
     runtime.set_loader(
-        (wit::WitModuleResolver, fs::FsModuleResolver::new()),
-        (wit::WitModuleLoader, fs::FsModuleLoader),
+        (wit::WitModuleResolver, host::HostModuleResolver),
+        (wit::WitModuleLoader, host::HostModuleLoader),
     );
 }
 

@@ -1,5 +1,11 @@
 package local:init;
 
+interface module-loader {
+  resolve: func(referrer: string, specifier: string) -> result<string, string>;
+  load: func(path: string) -> result<string, string>;
+}
+
 world init {
+  import module-loader;
   export init: func(shim: string, script: string, entry-path: option<string>, disable-gc: bool) -> result<_, string>;
 }
