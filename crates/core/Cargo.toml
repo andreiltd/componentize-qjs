@@ -34,6 +34,7 @@ path = "src/lib.rs"
 [dependencies]
 anyhow.workspace = true
 bytes = "1"
+oxc_resolver = "11.21.0"
 tokio.workspace = true
 wit-parser.workspace = true
 wit-component = { version = "0.252", features = ["dummy-module"] }

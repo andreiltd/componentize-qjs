@@ -16,6 +16,15 @@ use wit_parser::{Docs, ManglingAndAbi, Resolve, Stability, World, WorldItem, Wor
 
 /// Stub all WASI imports in a component, producing a self-contained component.
 pub fn stub_wasi_imports(component: &[u8]) -> Result<Vec<u8>> {
+    stub_imports(component, |name| name.starts_with("wasi:"))
+}
+
+/// Stub componentization-only imports that must not leak into final components.
+pub fn stub_internal_imports(component: &[u8]) -> Result<Vec<u8>> {
+    stub_imports(component, |name| name == "local:init/module-loader")
+}
+
+fn stub_imports(component: &[u8], should_stub: impl Fn(&str) -> bool) -> Result<Vec<u8>> {
     let decoded = decode(component).context("failed to decode component WIT")?;
     let (resolve, world_id) = match decoded {
         DecodedWasm::Component(resolve, world_id) => (resolve, world_id),
@@ -24,19 +33,19 @@ pub fn stub_wasi_imports(component: &[u8]) -> Result<Vec<u8>> {
 
     let world = &resolve.worlds[world_id];
 
-    let wasi_imports: IndexMap<WorldKey, WorldItem> = world
+    let imports: IndexMap<WorldKey, WorldItem> = world
         .imports
         .clone()
         .into_iter()
-        .filter(|(key, _)| resolve.name_world_key(key).starts_with("wasi:"))
+        .filter(|(key, _)| should_stub(&resolve.name_world_key(key)))
         .collect();
 
-    if wasi_imports.is_empty() {
+    if imports.is_empty() {
         return Ok(component.to_vec());
     }
 
-    let stub_component = make_stub_component(&resolve, world, &wasi_imports)
-        .context("failed to build stub component")?;
+    let stub_component =
+        make_stub_component(&resolve, world, &imports).context("failed to build stub component")?;
 
     let mut graph = CompositionGraph::new();
 
@@ -56,17 +65,17 @@ pub fn stub_wasi_imports(component: &[u8]) -> Result<Vec<u8>> {
         .context("failed to encode composed component")
 }
 
-/// Build a component that exports trap implementations for the given WASI imports.
+/// Build a component that exports trap implementations for the given imports.
 fn make_stub_component(
     resolve: &Resolve,
     original_world: &World,
-    wasi_imports: &IndexMap<WorldKey, WorldItem>,
+    imports: &IndexMap<WorldKey, WorldItem>,
 ) -> Result<Vec<u8>> {
     let mut stub_resolve = resolve.clone();
     let stub_world_id = stub_resolve.worlds.alloc(World {
         name: "wasi-stubs".to_string(),
         imports: IndexMap::new(),
-        exports: wasi_imports.clone(),
+        exports: imports.clone(),
         package: original_world.package,
         docs: Docs::default(),
         stability: Stability::default(),

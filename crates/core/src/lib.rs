@@ -1,16 +1,18 @@
 pub mod codegen;
+mod resolver;
 pub mod stubwasi;
 
-use std::path::{Component as PathComponent, Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
-use stubwasi::stub_wasi_imports;
+use resolver::Resolver;
+use stubwasi::{stub_internal_imports, stub_wasi_imports};
 use wasi_preview1_component_adapter_provider::WASI_SNAPSHOT_PREVIEW1_REACTOR_ADAPTER;
 use wasmtime::component::{Component as WasmtimeComponent, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::p2::pipe::{MemoryInputPipe, MemoryOutputPipe};
-use wasmtime_wasi::{DirPerms, FilePerms, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 use wasmtime_wizer::{WasmtimeWizerComponent, Wizer};
 use wit_parser::Resolve;
 
@@ -107,7 +109,7 @@ pub async fn componentize(opts: &ComponentizeOpts<'_>) -> Result<Vec<u8>> {
     let world_id = resolve.select_world(&[pkg_id], opts.world_name)?;
 
     let shim = codegen::generate_shim(&resolve, world_id);
-    let module_resolution = module_resolution(opts)?;
+    let resolver = module_resolution(opts)?;
     let mut wit_dylib = wit_dylib::create(&resolve, world_id, None);
 
     wit_component::embed_component_metadata(
@@ -136,16 +138,30 @@ pub async fn componentize(opts: &ComponentizeOpts<'_>) -> Result<Vec<u8>> {
         &pre_wizer_component,
         &shim,
         opts.js_source,
-        module_resolution.as_ref(),
+        resolver,
         opts.disable_gc,
     )
     .await?;
+
+    component = stub_internal_imports(&component)
+        .context("failed to stub internal module-loader import")?;
 
     if opts.stub_wasi {
         component = stub_wasi_imports(&component).context("failed to stub WASI imports")?;
     }
 
     Ok(component)
+}
+
+fn module_resolution(opts: &ComponentizeOpts<'_>) -> Result<Option<Resolver>> {
+    let Some(js_path) = opts.js_path else {
+        if opts.module_root.is_some() {
+            return Err(anyhow!("module_root requires js_path"));
+        }
+        return Ok(None);
+    };
+
+    Resolver::new(js_path, opts.module_root).map(Some)
 }
 
 /// Return the built-in default runtime Wasm bytes.
@@ -178,129 +194,21 @@ fn runtime_wasm(runtime: Runtime<'_>) -> &[u8] {
     }
 }
 
-struct ModuleResolution {
-    host_root: PathBuf,
-    guest_entry_path: String,
-}
-
-fn module_resolution(opts: &ComponentizeOpts<'_>) -> Result<Option<ModuleResolution>> {
-    let Some(js_path) = opts.js_path else {
-        if opts.module_root.is_some() {
-            return Err(anyhow!("module_root requires js_path"));
-        }
-        return Ok(None);
-    };
-
-    let host_entry = js_path
-        .canonicalize()
-        .with_context(|| format!("failed to resolve JS entry path {}", js_path.display()))?;
-    if !host_entry.is_file() {
-        return Err(anyhow!(
-            "JS entry path is not a file: {}",
-            host_entry.display()
-        ));
-    }
-
-    let host_root = match opts.module_root {
-        Some(root) => root
-            .canonicalize()
-            .with_context(|| format!("failed to resolve module root {}", root.display()))?,
-        None => default_module_root(&host_entry)?,
-    };
-    if !host_root.is_dir() {
-        return Err(anyhow!(
-            "module root is not a directory: {}",
-            host_root.display()
-        ));
-    }
-
-    let relative_entry = host_entry.strip_prefix(&host_root).with_context(|| {
-        format!(
-            "JS entry path {} is not under module root {}",
-            host_entry.display(),
-            host_root.display()
-        )
-    })?;
-    let guest_entry_path = guest_absolute_path(relative_entry)?;
-
-    Ok(Some(ModuleResolution {
-        host_root,
-        guest_entry_path,
-    }))
-}
-
-fn default_module_root(host_entry: &Path) -> Result<PathBuf> {
-    let cwd = std::env::current_dir()
-        .context("failed to read current directory")?
-        .canonicalize()
-        .context("failed to resolve current directory")?;
-
-    if host_entry.starts_with(&cwd) {
-        return Ok(cwd);
-    }
-
-    host_entry
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| anyhow!("JS entry path has no parent: {}", host_entry.display()))
-}
-
-fn guest_absolute_path(relative: &Path) -> Result<String> {
-    let mut guest = String::from("/");
-    let mut first = true;
-
-    for component in relative.components() {
-        let PathComponent::Normal(part) = component else {
-            return Err(anyhow!(
-                "JS entry path contains unsupported component: {}",
-                relative.display()
-            ));
-        };
-        let part = part.to_str().ok_or_else(|| {
-            anyhow!(
-                "JS entry path contains non-UTF-8 component: {}",
-                relative.display()
-            )
-        })?;
-
-        if !first {
-            guest.push('/');
-        }
-        guest.push_str(part);
-        first = false;
-    }
-
-    if first {
-        return Err(anyhow!("JS entry path cannot be the module root"));
-    }
-
-    Ok(guest)
-}
-
 async fn wizer_init(
     component: &[u8],
     shim: &str,
     js: &str,
-    module_resolution: Option<&ModuleResolution>,
+    resolver: Option<Resolver>,
     disable_gc: bool,
 ) -> Result<Vec<u8>> {
     let stdout = MemoryOutputPipe::new(10000);
     let stderr = MemoryOutputPipe::new(10000);
 
-    let mut wasi = WasiCtxBuilder::new();
-    wasi.stdin(MemoryInputPipe::new(Bytes::new()))
+    let wasi = WasiCtxBuilder::new()
+        .stdin(MemoryInputPipe::new(Bytes::new()))
         .stdout(stdout.clone())
-        .stderr(stderr.clone());
-    if let Some(resolution) = module_resolution {
-        wasi.preopened_dir(&resolution.host_root, "/", DirPerms::READ, FilePerms::READ)
-            .map_err(|err| {
-                anyhow!(
-                    "failed to preopen module root {}: {err}",
-                    resolution.host_root.display()
-                )
-            })?;
-    }
-    let wasi = wasi.build();
+        .stderr(stderr.clone())
+        .build();
 
     let table = ResourceTable::new();
     let mut config = Config::new();
@@ -319,14 +227,16 @@ async fn wizer_init(
     linker.define_unknown_imports_as_traps(&comp)?;
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
     wasmtime_wasi::p3::add_to_linker(&mut linker)?;
-    let instance = linker.instantiate_async(&mut store, &comp).await?;
 
+    register_module_loader(&mut linker, resolver.clone())?;
+
+    let instance = linker.instantiate_async(&mut store, &comp).await?;
     let init = Init::new(&mut store, &instance)?;
     init.call_init(
         &mut store,
         shim,
         js,
-        module_resolution.map(|resolution| resolution.guest_entry_path.as_str()),
+        resolver.as_ref().map(Resolver::entry_path),
         disable_gc,
     )
     .await?
@@ -350,4 +260,42 @@ async fn wizer_init(
         .await?;
 
     Ok(component)
+}
+
+fn register_module_loader(linker: &mut Linker<Ctx>, resolver: Option<Resolver>) -> Result<()> {
+    let resolve = resolver.clone();
+    let load = resolver;
+
+    let mut instance = linker.instance("local:init/module-loader")?;
+    instance.func_wrap(
+        "resolve",
+        move |_, (referrer, specifier): (String, String)| -> wasmtime::Result<_> {
+            let result = resolve.as_ref().map_or_else(
+                || {
+                    Err(
+                        "filesystem module not found: module resolution requires js_path"
+                            .to_string(),
+                    )
+                },
+                |resolver| {
+                    resolver
+                        .resolve(&referrer, &specifier)
+                        .map_err(|err| err.to_string())
+                },
+            );
+            Ok((result,))
+        },
+    )?;
+    instance.func_wrap(
+        "load",
+        move |_, (path,): (String,)| -> wasmtime::Result<_> {
+            let result = load.as_ref().map_or_else(
+                || Err("filesystem module not found: module loading requires js_path".to_string()),
+                |resolver| resolver.load(&path).map_err(|err| err.to_string()),
+            );
+            Ok((result,))
+        },
+    )?;
+
+    Ok(())
 }
