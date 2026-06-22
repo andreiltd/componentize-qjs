@@ -57,11 +57,11 @@ componentize-qjs.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true
-oxc_minifier = "0.135.0"
-oxc_allocator = "0.135.0"
-oxc_codegen = "0.135.0"
-oxc_parser = "0.135.0"
-oxc_span = "0.135.0"
+oxc_minifier = "0.137.0"
+oxc_allocator = "0.137.0"
+oxc_codegen = "0.137.0"
+oxc_parser = "0.137.0"
+oxc_span = "0.137.0"
 
 [features]
 default = ["component-model-async"]
