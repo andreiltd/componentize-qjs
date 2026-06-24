@@ -71,3 +71,8 @@ nm_standalone_test.js ./nm_componentize_qjs.sh
 ```shell
 nm_standalone_test_node.js ./nm_componentize_qjs.sh
 ```
+
+## License
+Do What the Fuck You Want to Public License [WTFPLv2](http://www.wtfpl.net/about/)
+
+
