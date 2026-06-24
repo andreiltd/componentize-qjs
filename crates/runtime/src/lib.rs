@@ -36,6 +36,7 @@ pub(crate) type DetHashSet<T> = std::collections::HashSet<T, DetHasher>;
 pub(crate) type DetIndexMap<K, V> = indexmap::IndexMap<K, V, DetHasher>;
 
 // Generate bindings for the init interface for wizer
+#[allow(clippy::too_many_arguments)]
 mod init {
     wit_bindgen::generate!({
         world: "init",

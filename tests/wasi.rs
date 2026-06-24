@@ -14,7 +14,7 @@ fn test_wasi_random() {
         .world("wasi-random")
         .script(
             r#"
-            import random from "wasi:random/random@0.2.6";
+            import random from "wasi:random/random@0.2.12";
 
             export function getRandomU64() { return random.getRandomU64(); }
             export function getRandomBytes(len) { return random.getRandomBytes(len); }
@@ -46,7 +46,7 @@ fn test_wasi_named_imports() {
             import {
                 getRandomBytes as randomBytes,
                 getRandomU64 as randomU64,
-            } from "wasi:random/random@0.2.6";
+            } from "wasi:random/random@0.2.12";
 
             export function getRandomU64() { return randomU64(); }
             export function getRandomBytes(len) { return randomBytes(len); }
@@ -72,7 +72,7 @@ fn test_wasi_clocks() {
         .world("wasi-clocks")
         .script(
             r#"
-            import clock from "wasi:clocks/monotonic-clock@0.2.6";
+            import clock from "wasi:clocks/monotonic-clock@0.2.12";
 
             export function getTimeNs() { return clock.now(); }
             export function elapsedNs() {
@@ -118,7 +118,7 @@ fn test_wasi_environment() {
         .env("TEST_KEY", "test_value")
         .script(
             r#"
-            import env from "wasi:cli/environment@0.2.6";
+            import env from "wasi:cli/environment@0.2.12";
 
             export function getEnvVars() { return env.getEnvironment(); }
         "#,
@@ -154,8 +154,8 @@ fn test_wasi_stdio() {
         .stdin("hello from stdin")
         .script(
             r#"
-            import stdin from "wasi:cli/stdin@0.2.6";
-            import stdout from "wasi:cli/stdout@0.2.6";
+            import stdin from "wasi:cli/stdin@0.2.12";
+            import stdout from "wasi:cli/stdout@0.2.12";
 
             export function echoStdinToStdout() {
                 const input = stdin.getStdin();
@@ -203,7 +203,7 @@ async fn test_wasi_0_3_stdio_example() {
     {
         let (instance, store) = inst.parts();
         let iface_idx = instance
-            .get_export_index(&mut *store, None, "wasi:cli/run@0.3.0-rc-2026-03-15")
+            .get_export_index(&mut *store, None, "wasi:cli/run@0.3.0")
             .expect("wasi:cli/run export not found");
         let run_idx = instance
             .get_export_index(&mut *store, Some(&iface_idx), "run")

@@ -1,35 +1,35 @@
 package test:wasi;
 
 world wasi-random {
-    import wasi:random/random@0.2.6;
+    import wasi:random/random@0.2.12;
 
     export get-random-u64: func() -> u64;
     export get-random-bytes: func(len: u32) -> list<u8>;
 }
 
 world wasi-clocks {
-    import wasi:clocks/monotonic-clock@0.2.6;
+    import wasi:clocks/monotonic-clock@0.2.12;
 
     export get-time-ns: func() -> u64;
     export elapsed-ns: func() -> u64;
 }
 
 world wasi-environment {
-    import wasi:cli/environment@0.2.6;
+    import wasi:cli/environment@0.2.12;
 
     export get-env-vars: func() -> list<tuple<string, string>>;
 }
 
 world wasi-stdio {
-    import wasi:cli/stdin@0.2.6;
-    import wasi:cli/stdout@0.2.6;
-    import wasi:io/streams@0.2.6;
+    import wasi:cli/stdin@0.2.12;
+    import wasi:cli/stdout@0.2.12;
+    import wasi:io/streams@0.2.12;
 
     export echo-stdin-to-stdout: func() -> result;
 }
 
 world wasi-import-types {
-    import wasi:filesystem/types@0.2.6;
+    import wasi:filesystem/types@0.2.12;
 
     export check-import-types: func() -> bool;
 }
