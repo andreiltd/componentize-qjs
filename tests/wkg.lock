@@ -7,24 +7,42 @@ name = "wasi:cli"
 registry = "wasi.dev"
 
 [[packages.versions]]
-requirement = "=0.2.6"
-version = "0.2.6"
-digest = "sha256:fdbe84136b3dd46d94305ef37f24f3cf04a70cc2026dca2592ac2ec0c9de15c7"
+requirement = "=0.2.12"
+version = "0.2.12"
+digest = "sha256:d548a7ee2a3ff65e29c452e4327b7e625813420f4bdd7e16f7e46d32c5dff8c6"
 
 [[packages]]
 name = "wasi:clocks"
 registry = "wasi.dev"
 
 [[packages.versions]]
-requirement = "=0.2.6"
-version = "0.2.6"
-digest = "sha256:569984cc45d3f5a362a3b2897aabbaa3cc4184a6113bfcbbf03c1bd7fc20338c"
+requirement = "=0.2.12"
+version = "0.2.12"
+digest = "sha256:29e94d379b2239df6bc23cdfc6232dc69ffeb7cc236349fab2244803c323d92b"
+
+[[packages]]
+name = "wasi:filesystem"
+registry = "wasi.dev"
+
+[[packages.versions]]
+requirement = "=0.2.12"
+version = "0.2.12"
+digest = "sha256:7f78b3697aba67d1e91aa318e178cede137a1edddbf62e3b6f7e635d180dddce"
+
+[[packages]]
+name = "wasi:io"
+registry = "wasi.dev"
+
+[[packages.versions]]
+requirement = "=0.2.12"
+version = "0.2.12"
+digest = "sha256:910ed36e3589ab4c16c9942528152b80485e659852297916313318da47b44af8"
 
 [[packages]]
 name = "wasi:random"
 registry = "wasi.dev"
 
 [[packages.versions]]
-requirement = "=0.2.6"
-version = "0.2.6"
-digest = "sha256:14ea24097cbe19ae2c79c6ffead72f70c4aed65bb68ef40ed8eca6e08383dc1b"
+requirement = "=0.2.12"
+version = "0.2.12"
+digest = "sha256:27a883ca86f062bf8010a86e0d56a2bc0238125d065f6a4b41a0c3a9d8de66f3"

@@ -212,8 +212,8 @@ Imported resources are exposed as JavaScript classes. Resource methods are
 called on the handle:
 
 ```js
-import stdin from "wasi:cli/stdin@0.2.10";
-import stdout from "wasi:cli/stdout@0.2.10";
+import stdin from "wasi:cli/stdin@0.2.12";
+import stdout from "wasi:cli/stdout@0.2.12";
 
 const input = stdin.getStdin();     // an InputStream
 const output = stdout.getStdout();  // an OutputStream

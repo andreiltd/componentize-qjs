@@ -1,7 +1,7 @@
-package wasi:filesystem@0.3.0-rc-2026-03-15;
+package wasi:filesystem@0.3.0;
 
 interface types {
-  use wasi:clocks/system-clock@0.3.0-rc-2026-03-15.{instant};
+  use wasi:clocks/system-clock@0.3.0.{instant};
 
   type filesize = u64;
 
