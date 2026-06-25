@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2](https://github.com/andreiltd/componentize-qjs/compare/v0.4.1...v0.4.2) - 2026-06-25
+
+### Bug Fixes
+
+- *(deps)* update rust dependencies ([#52](https://github.com/andreiltd/componentize-qjs/pull/52))
+
+### Miscellaneous
+
+- bump wasmtime to v46.0.1 ([#57](https://github.com/andreiltd/componentize-qjs/pull/57))
+- bump wasmtime ([#56](https://github.com/andreiltd/componentize-qjs/pull/56))
+- *(deps)* update github ci dependencies to v7 ([#53](https://github.com/andreiltd/componentize-qjs/pull/53))
+- *(deps)* update github ci dependencies ([#51](https://github.com/andreiltd/componentize-qjs/pull/51))
+
 ## [0.4.1](https://github.com/andreiltd/componentize-qjs/compare/v0.4.0...v0.4.1) - 2026-06-18
 
 ### Features
