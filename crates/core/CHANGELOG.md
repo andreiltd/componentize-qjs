@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2](https://github.com/andreiltd/componentize-qjs/compare/componentize-qjs-v0.4.1...componentize-qjs-v0.4.2) - 2026-06-25
+
+### Miscellaneous
+
+- bump wasmtime ([#56](https://github.com/andreiltd/componentize-qjs/pull/56))
+
 ## [0.4.1](https://github.com/andreiltd/componentize-qjs/compare/componentize-qjs-v0.4.0...componentize-qjs-v0.4.1) - 2026-06-18
 
 ### Features
