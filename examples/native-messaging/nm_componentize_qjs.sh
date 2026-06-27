@@ -1,0 +1,1 @@
+#!/usr/bin/env -S wasmtime run -W component-model-async=y /ABSOLUTE/PATH/TO/native-messaging-componentize-qjs/nm_componentize_qjs.wasm 
