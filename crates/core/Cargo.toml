@@ -39,10 +39,10 @@ tokio.workspace = true
 wit-parser.workspace = true
 wit-component = { version = "0.254", features = ["dummy-module"] }
 wit-dylib = "0.254"
-wasi-preview1-component-adapter-provider = "46"
+wasi-preview1-component-adapter-provider = "47"
 wasmtime.workspace = true
 wasmtime-wasi.workspace = true
-wasmtime-wizer = { version = "46", features = ["component-model", "wasmtime"] }
+wasmtime-wizer = { version = "47", features = ["component-model", "wasmtime"] }
 wac-graph = "0.10"
 indexmap = "2"
 
