@@ -1,3 +1,8 @@
+//! Link JavaScript, WIT bindings, and a QuickJS runtime into a WebAssembly component.
+//!
+//! Componentization builds a temporary component, evaluates the generated shim
+//! and user module under Wizer, then snapshots the initialized runtime.
+
 pub mod codegen;
 mod resolver;
 pub mod stubwasi;
@@ -85,6 +90,18 @@ pub enum Runtime<'a> {
     OptSizeSync,
     /// Caller-provided runtime Wasm bytes.
     Custom(&'a [u8]),
+}
+
+impl Runtime<'static> {
+    /// Select a built-in runtime from the CLI-style sync and size options.
+    pub fn builtin(sync: bool, opt_size: bool) -> Self {
+        match (sync, opt_size) {
+            (true, true) => Self::OptSizeSync,
+            (true, false) => Self::DefaultSync,
+            (false, true) => Self::OptSize,
+            (false, false) => default_builtin_runtime(),
+        }
+    }
 }
 
 impl Default for Runtime<'_> {

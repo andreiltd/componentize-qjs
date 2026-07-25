@@ -182,6 +182,35 @@ fn test_list_type() {
 }
 
 #[test]
+fn test_typed_array_list_return() {
+    TestCase::new()
+        .wit(
+            r#"
+            package test:typed-array-list;
+            world typed-array-list {
+                export bytes: func() -> list<u8>;
+                export empty: func() -> list<u8>;
+            }
+        "#,
+        )
+        .script(
+            r#"
+            export function bytes() { return new Uint8Array([0, 1, 127, 255]); }
+            export function empty() { return new Uint8Array(); }
+        "#,
+        )
+        .expect_call(
+            "bytes",
+            vec![],
+            Val::List(vec![Val::U8(0), Val::U8(1), Val::U8(127), Val::U8(255)]),
+        )
+        .expect_call("empty", vec![], Val::List(vec![]))
+        .build()
+        .unwrap()
+        .run();
+}
+
+#[test]
 fn test_option_type() {
     TestCase::new()
         .wit(
@@ -950,6 +979,59 @@ fn test_nested_option() {
         .build()
         .unwrap()
         .run();
+}
+
+#[test]
+fn test_malformed_tagged_values_trap() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:malformed-tags;
+            world malformed-tags {
+                type nested-option = option<option<u32>>;
+                type unit-result = result;
+
+                export bad-option-tag: func() -> nested-option;
+                export throwing-option-payload: func() -> nested-option;
+                export bad-result-tag: func() -> option<unit-result>;
+            }
+        "#,
+        )
+        .script(
+            r#"
+            export function badOptionTag() {
+                return { tag: "invalid" };
+            }
+
+            export function throwingOptionPayload() {
+                const value = { tag: "some" };
+                Object.defineProperty(value, "val", {
+                    get() { throw new Error("payload getter failed"); },
+                });
+                return value;
+            }
+
+            export function badResultTag() {
+                return { tag: "invalid" };
+            }
+        "#,
+        )
+        .build()
+        .unwrap();
+
+    for name in [
+        "bad-option-tag",
+        "throwing-option-payload",
+        "bad-result-tag",
+    ] {
+        let (inner, store) = instance.parts();
+        let func = inner
+            .get_func(&mut *store, name)
+            .unwrap_or_else(|| panic!("{name} export not found"));
+        let mut results = [Val::Bool(false)];
+        let result = func.call(&mut *store, &[], &mut results);
+        assert!(result.is_err(), "{name} should trap");
+    }
 }
 
 #[test]

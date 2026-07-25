@@ -51,7 +51,9 @@ pub(crate) enum CallbackCode {
 
 impl CallbackCode {
     /// Encode as the raw `u32` returned from the callback.
-    /// `Wait` encodes the waitable set index in the upper bits.
+    ///
+    /// The low four bits contain the callback code. `Wait` stores the
+    /// waitable-set index in the remaining upper bits.
     pub(crate) fn encode(self, waitable_set: u32) -> u32 {
         match self {
             Self::Exit => 0,
@@ -72,7 +74,9 @@ pub(crate) enum CopyResult {
 
 /// Unpack a stream/future return value into (progress, result) tuple.
 ///
-/// Returns `None` if the operation blocked.
+/// The low four bits contain [`CopyResult`] and the upper bits contain the
+/// number of elements copied. Returns `None` for the distinguished
+/// [`BLOCKED`] value.
 pub(crate) fn unpack_copy_result(packed: u32) -> Option<(u32, CopyResult)> {
     if is_blocked_raw(packed) {
         return None;
@@ -89,10 +93,15 @@ pub(crate) fn unpack_copy_result(packed: u32) -> Option<(u32, CopyResult)> {
 #[repr(u32)]
 #[allow(dead_code)]
 pub(crate) enum CopyState {
+    /// Ready to start an operation.
     Idle = 1,
+    /// Executing an operation that has not returned to JavaScript yet.
     SyncCopying = 2,
+    /// Waiting for the host to deliver a completion callback.
     AsyncCopying = 3,
+    /// Waiting for a blocked cancellation request to complete.
     CancellingCopy = 4,
+    /// Closed, dropped, or consumed.
     Done = 5,
 }
 
@@ -137,10 +146,17 @@ impl CopyKind {
 }
 
 /// Common state for a readable or writable stream/future end.
+///
+/// A present `handle` is owned by this end. Streams return to [`CopyState::Idle`]
+/// after successful copies, while futures transition to [`CopyState::Done`]
+/// because they are one-shot.
 pub(crate) struct CopyEnd {
     kind: CopyKind,
+    /// Index into the WIT stream/future metadata table.
     pub(crate) type_index: u32,
+    /// Canonical ABI handle, removed when ownership is transferred or dropped.
     pub(crate) handle: Option<u32>,
+    /// Current copy/cancellation state.
     pub(crate) state: CopyState,
 }
 
@@ -221,7 +237,7 @@ impl CopyEnd {
     }
 }
 
-/// A decoded async callback event
+/// A decoded async callback event.
 pub(crate) enum Event {
     None,
     Subtask { handle: u32, state: SubtaskState },
@@ -234,6 +250,10 @@ pub(crate) enum Event {
 
 impl Event {
     /// Decode a raw `(event0, event1, event2)` callback triple into a typed event.
+    ///
+    /// `event0` selects the event kind. For I/O events `event1` is the handle
+    /// and `event2` is the packed copy result; subtask events use `event2` for
+    /// [`SubtaskState`].
     pub(crate) fn decode(event0: u32, event1: u32, event2: u32) -> Self {
         match EventCode::try_from(event0).expect("unknown event code") {
             EventCode::None => Self::None,

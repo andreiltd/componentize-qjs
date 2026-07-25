@@ -13,6 +13,10 @@ use crate::result::ResultBoundary;
 use crate::{QjsCallContext, resolve_promise, with_ctx};
 
 /// A pending async operation awaiting a callback event.
+///
+/// Each variant owns everything that must survive while control is returned
+/// to the host: the conversion stack, any canonical ABI buffer, saved promise
+/// callbacks, and the JS endpoint wrapper.
 #[allow(dead_code)]
 pub(crate) enum Pending {
     /// An async import call that hasn't returned yet.
@@ -57,6 +61,10 @@ pub(crate) enum Pending {
 }
 
 /// Inflight async operations for a single export call.
+///
+/// Every entry is joined to `waitable_set` while the host may wake it.
+/// Removing an entry first unjoins its handle so the set and the ownership map
+/// remain synchronized.
 #[derive(Default)]
 struct TaskInner {
     pending: DetHashMap<u32, Pending>,
@@ -64,6 +72,7 @@ struct TaskInner {
 }
 
 impl TaskInner {
+    /// Store an operation and join its handle to the lazily-created waitable set.
     fn register(&mut self, handle: u32, pending: Pending) {
         if self.waitable_set.is_none() {
             self.waitable_set = Some(unsafe { waitable_set_new() });
@@ -73,6 +82,7 @@ impl TaskInner {
         self.pending.insert(handle, pending);
     }
 
+    /// Unjoin a completed handle and take ownership of its pending state.
     fn take(&mut self, handle: u32) -> Pending {
         unsafe { waitable_join(handle, 0) };
         self.pending
@@ -80,11 +90,13 @@ impl TaskInner {
             .expect("no pending entry for handle")
     }
 
+    /// Temporarily remove a handle while issuing a cancellation request.
     fn unjoin(&mut self, handle: u32) {
         assert!(self.pending.contains_key(&handle));
         unsafe { waitable_join(handle, 0) };
     }
 
+    /// Rejoin a handle when its cancellation request also blocks.
     fn rejoin(&mut self, handle: u32) {
         assert!(self.pending.contains_key(&handle));
         unsafe { waitable_join(handle, self.waitable_set.unwrap()) };
@@ -101,7 +113,11 @@ impl TaskInner {
     }
 }
 
-/// Global task state
+/// Task state for the active async export.
+///
+/// The state lives here while QuickJS is running. [`TaskState::poll`] moves it
+/// into a host context pointer while waiting, and [`TaskState::restore`] moves
+/// it back when the callback resumes.
 #[derive(JsLifetime)]
 pub(crate) struct TaskState(RefCell<Option<TaskInner>>);
 
@@ -124,8 +140,10 @@ impl TaskState {
         *self.0.borrow_mut() = Some(TaskInner::default());
     }
 
-    /// Restore a previously saved task state from host context pointer.
+    /// Restore task state previously transferred to the host by [`Self::poll`].
     pub(crate) fn restore(&self, ptr: usize) {
+        // `poll` created this allocation with `Box::into_raw`; the host returns
+        // the same pointer exactly once on the next callback.
         let inner = unsafe { *Box::from_raw(ptr as *mut TaskInner) };
         *self.0.borrow_mut() = Some(inner);
     }
@@ -153,6 +171,10 @@ impl TaskState {
         self.with(|inner| inner.rejoin(handle));
     }
 
+    /// Attach an async-iterator `return()` resolver to its pending stream read.
+    ///
+    /// The read callback completes both the original `next()` and the deferred
+    /// `return()` after cancellation has settled.
     pub(crate) fn set_stream_iterator_return(
         &self,
         handle: u32,
@@ -172,8 +194,10 @@ impl TaskState {
         });
     }
 
-    /// Drive the quickjs job queue until drained, then decide whether to
-    /// exit or wait for more events. Returns the encoded callback code.
+    /// Drain the QuickJS job queue and either finish or suspend the export.
+    ///
+    /// Suspending transfers `TaskInner` into a raw host-context pointer. No Rust
+    /// owner remains until the host supplies that pointer to [`Self::restore`].
     pub(crate) fn poll(&self) -> u32 {
         with_ctx(|ctx| while ctx.execute_pending_job() {});
 
@@ -194,7 +218,10 @@ impl TaskState {
     }
 }
 
-/// Handle a subtask (async import call) event.
+/// Reconcile a host subtask event with its pending JavaScript import promise.
+///
+/// Returned subtasks lift their canonical result before settling the promise;
+/// cancellation drops the subtask and resolves with `undefined`.
 pub(crate) fn handle_subtask(handle: u32, state: SubtaskState) {
     match state {
         SubtaskState::Starting => unreachable!("Starting should not reach callback"),

@@ -457,3 +457,29 @@ fn test_cli_minify() {
         Val::String("Hello, World!".into()),
     );
 }
+
+#[test]
+fn test_cli_minify_reports_parse_errors() {
+    let dir = TempDir::new().unwrap();
+    let wit_path = dir.path().join("test.wit");
+    let js_path = dir.path().join("test.js");
+
+    fs::write(
+        &wit_path,
+        "package test:minify-error;\nworld minify-error { export run: func(); }",
+    )
+    .unwrap();
+    fs::write(&js_path, "export function run( {").unwrap();
+
+    componentize_qjs()
+        .arg("--wit")
+        .arg(&wit_path)
+        .arg("--js")
+        .arg(&js_path)
+        .arg("--minify")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "failed to parse JavaScript before minification",
+        ));
+}

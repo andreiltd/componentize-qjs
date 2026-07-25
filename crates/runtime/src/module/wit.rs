@@ -6,9 +6,8 @@ use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::module::Declared;
 use rquickjs::module::{Declarations, Exports, ModuleDef};
 use rquickjs::{Ctx, Error, Module};
-use wit_dylib_ffi::Wit;
 
-use crate::wit_imports::{WitInterface, interface_member_names, partition_imports};
+use crate::wit_imports::{WitInterface, interface_member_names};
 use crate::{CtxExt, bindings, with_ctx};
 
 /// Transient state used while declaring native WIT import modules.
@@ -42,7 +41,7 @@ impl Resolver for WitModuleResolver {
         name: &str,
         _attributes: Option<ImportAttributes<'js>>,
     ) -> rquickjs::Result<String> {
-        if has_import_module(ctx.wit(), name) {
+        if ctx.wit_import_registry().get(name).is_some() {
             Ok(name.to_string())
         } else {
             Err(Error::new_resolving(base, name))
@@ -59,10 +58,12 @@ impl Loader for WitModuleLoader {
         name: &str,
         _attributes: Option<ImportAttributes<'js>>,
     ) -> rquickjs::Result<Module<'js, Declared>> {
-        let iface = find_import_interface(ctx.wit(), name)
+        let registry = ctx.wit_import_registry();
+        let iface = registry
+            .get(name)
             .ok_or_else(|| Error::new_loading_message(name, "WIT import not found"))?;
 
-        declare_import_module(ctx, name, &iface)
+        declare_import_module(ctx, name, iface)
     }
 }
 
@@ -84,14 +85,16 @@ impl ModuleDef for WitImportModule {
 
     fn evaluate<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> rquickjs::Result<()> {
         let module_name: String = exports.module().name()?;
-        let iface = find_import_interface(ctx.wit(), &module_name)
+        let registry = ctx.wit_import_registry();
+        let iface = registry
+            .get(&module_name)
             .ok_or_else(|| Error::new_loading_message(module_name, "WIT import not found"))?;
 
-        let obj = bindings::interface_to_js(ctx, &iface)?;
+        let obj = bindings::interface_to_js(ctx, iface)?;
         freeze(ctx, obj.clone())?;
 
         exports.export("default", obj.clone())?;
-        for name in export_names(&iface) {
+        for name in export_names(iface) {
             let value: rquickjs::Value = obj.get(name.as_str())?;
             exports.export(name, value)?;
         }
@@ -108,26 +111,6 @@ impl Drop for DeclaredExportsGuard<'_> {
     fn drop(&mut self) {
         self.ctx.wit_import_declarations().pop();
     }
-}
-
-fn find_import_interface(wit_def: Wit, specifier: &str) -> Option<WitInterface> {
-    for (name, iface) in partition_imports(wit_def) {
-        let Some(name) = name else {
-            continue;
-        };
-
-        let name_no_version = name.split('@').next().unwrap_or(name);
-
-        if specifier == name || specifier == name_no_version {
-            return Some(iface);
-        }
-    }
-
-    None
-}
-
-fn has_import_module(wit_def: Wit, specifier: &str) -> bool {
-    find_import_interface(wit_def, specifier).is_some()
 }
 
 fn declare_import_module<'js>(

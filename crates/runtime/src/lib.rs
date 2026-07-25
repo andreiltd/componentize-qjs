@@ -8,13 +8,13 @@ mod module;
 mod resources;
 mod result;
 mod streams;
+mod tagged;
 mod task;
 mod trivia;
 mod wit_imports;
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::hash_map::DefaultHasher;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use rquickjs::runtime::UserDataGuard;
 use rquickjs::{Context, JsLifetime, Persistent, Runtime, Value, function};
@@ -50,21 +50,39 @@ mod init {
 }
 
 // Global JS runtime and context.
-static JS_STATE: SyncWrap<OnceCell<JsState>> = SyncWrap(OnceCell::new());
+static JS_STATE: GlobalJsState = GlobalJsState(OnceCell::new());
 
-/// Wrapper to mark types as Sync for single-threaded WASM.
-struct SyncWrap<T>(pub(crate) T);
+/// Global storage for the single-threaded Wasm runtime.
+struct GlobalJsState(OnceCell<JsState>);
 
 // SAFETY: WASM execution is single-threaded for now.
-unsafe impl<T> Sync for SyncWrap<T> {}
+unsafe impl Sync for GlobalJsState {}
 
 /// Global state for the quickjs runtime and context.
 struct JsState {
     context: Context,
     /// Ensures the JavaScript source is only evaluated once during initialization.
-    evaluated: AtomicBool,
+    evaluated: Cell<bool>,
     /// Cached active context pointer for re-entrant `with_ctx` calls.
     ctx_ptr: Cell<Option<*const ()>>,
+}
+
+struct ActiveContextGuard<'a> {
+    slot: &'a Cell<Option<*const ()>>,
+    previous: Option<*const ()>,
+}
+
+impl<'a> ActiveContextGuard<'a> {
+    fn enter(slot: &'a Cell<Option<*const ()>>, ctx: &rquickjs::Ctx<'_>) -> Self {
+        let previous = slot.replace(Some(std::ptr::from_ref(ctx).cast()));
+        Self { slot, previous }
+    }
+}
+
+impl Drop for ActiveContextGuard<'_> {
+    fn drop(&mut self) {
+        self.slot.set(self.previous);
+    }
 }
 
 /// Extension trait for `rquickjs::Ctx` providing convenient access to
@@ -90,6 +108,9 @@ pub(crate) trait CtxExt<'js> {
 
     /// Retrieve transient WIT import module declaration state.
     fn wit_import_declarations(&self) -> UserDataGuard<'_, module::WitImportDeclarations>;
+
+    /// Retrieve precomputed WIT import metadata.
+    fn wit_import_registry(&self) -> UserDataGuard<'_, wit_imports::WitImportRegistry>;
 }
 
 impl<'js> CtxExt<'js> for rquickjs::Ctx<'js> {
@@ -119,6 +140,10 @@ impl<'js> CtxExt<'js> for rquickjs::Ctx<'js> {
 
     fn wit_import_declarations(&self) -> UserDataGuard<'_, module::WitImportDeclarations> {
         self.userdata().expect("WitImportDeclarations not stored")
+    }
+
+    fn wit_import_registry(&self) -> UserDataGuard<'_, wit_imports::WitImportRegistry> {
+        self.userdata().expect("WitImportRegistry not stored")
     }
 }
 
@@ -158,10 +183,8 @@ impl JsState {
         }
 
         self.context.with(|ctx| {
-            let prev = self.ctx_ptr.replace(Some(std::ptr::from_ref(&ctx).cast()));
-            let result = f(&ctx);
-            self.ctx_ptr.set(prev);
-            result
+            let _guard = ActiveContextGuard::enter(&self.ctx_ptr, &ctx);
+            f(&ctx)
         })
     }
 }
@@ -262,7 +285,7 @@ fn init_js(
 ) -> Result<(), String> {
     let state = JsState::get_or_init();
 
-    if state.evaluated.swap(true, Ordering::SeqCst) {
+    if state.evaluated.replace(true) {
         return Err("JavaScript already evaluated".to_string());
     }
 
