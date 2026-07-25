@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3](https://github.com/andreiltd/componentize-qjs/compare/v0.4.2...v0.4.3) - 2026-07-25
+
+### Bug Fixes
+
+- *(deps)* update rust dependencies to v47 ([#67](https://github.com/andreiltd/componentize-qjs/pull/67))
+- *(deps)* update rust dependencies ([#65](https://github.com/andreiltd/componentize-qjs/pull/65))
+
+### Features
+
+- support async iterables for component streams ([#69](https://github.com/andreiltd/componentize-qjs/pull/69))
+
+### Miscellaneous
+
+- *(deps)* update actions/setup-node action to v7 ([#66](https://github.com/andreiltd/componentize-qjs/pull/66))
+- *(deps)* update npm dependencies ([#64](https://github.com/andreiltd/componentize-qjs/pull/64))
+- *(deps)* update github ci dependencies ([#63](https://github.com/andreiltd/componentize-qjs/pull/63))
+- *(deps)* update dtolnay/rust-toolchain digest to 4cda84d ([#62](https://github.com/andreiltd/componentize-qjs/pull/62))
+
+### Refactoring
+
+- simplify and harden runtime internals ([#70](https://github.com/andreiltd/componentize-qjs/pull/70))
+
 ## [0.4.2](https://github.com/andreiltd/componentize-qjs/compare/v0.4.1...v0.4.2) - 2026-07-03
 
 ### Bug Fixes
