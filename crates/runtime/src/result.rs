@@ -12,6 +12,7 @@ use rquickjs::{
 };
 use wit_dylib_ffi::{Type, WitResult};
 
+use crate::tagged::decode_tagged;
 use crate::{reject_promise, resolve_promise};
 
 #[derive(Clone, Copy)]
@@ -98,27 +99,18 @@ impl ResultBoundary {
             return Ok(JsCompletion::Return(value));
         };
 
-        let obj = value
-            .as_object()
-            .ok_or_else(|| rquickjs::Error::new_from_js(value.type_of().as_str(), "result"))?;
+        let (discriminant, payload) = decode_tagged(
+            ctx,
+            value,
+            "result",
+            [
+                ("ok", result_ty.ok().is_some()),
+                ("err", result_ty.err().is_some()),
+            ],
+        )?;
+        let payload = payload.unwrap_or_else(|| Value::new_undefined(ctx.clone()));
 
-        let tag: String = obj.get("tag")?;
-        let is_err = tag != "ok";
-
-        let has_payload = if is_err {
-            result_ty.err().is_some()
-        } else {
-            result_ty.ok().is_some()
-        };
-
-        let payload = if has_payload {
-            obj.get("val")
-                .unwrap_or_else(|_| Value::new_undefined(ctx.clone()))
-        } else {
-            Value::new_undefined(ctx.clone())
-        };
-
-        if is_err {
+        if discriminant == 1 {
             Ok(JsCompletion::Throw(component_error_value(ctx, payload)?))
         } else {
             Ok(JsCompletion::Return(payload))

@@ -109,12 +109,7 @@ pub async fn componentize(opts: ComponentizeOpts) -> Result<ComponentizeResult> 
     };
     let runtime = match custom_runtime.as_deref() {
         Some(wasm) => componentize_qjs::Runtime::Custom(wasm),
-        None => match (sync, opt_size) {
-            (true, true) => componentize_qjs::Runtime::OptSizeSync,
-            (true, false) => componentize_qjs::Runtime::DefaultSync,
-            (false, true) => componentize_qjs::Runtime::OptSize,
-            (false, false) => componentize_qjs::Runtime::default(),
-        },
+        None => componentize_qjs::Runtime::builtin(sync, opt_size),
     };
 
     let opts = componentize_qjs::ComponentizeOpts {

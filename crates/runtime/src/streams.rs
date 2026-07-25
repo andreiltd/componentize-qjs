@@ -700,6 +700,17 @@ fn stream_write_all<'js>(
     write_all_step(ctx, stream_val, buffer, 0)
 }
 
+fn write_all_buffer_len(value: &Value<'_>) -> rquickjs::Result<usize> {
+    if let Some(array) = value.as_array() {
+        return Ok(array.len());
+    }
+
+    let object = value
+        .as_object()
+        .ok_or_else(|| rquickjs::Error::new_from_js(value.type_of().as_str(), "array"))?;
+    object.get("length")
+}
+
 fn write_all_step<'js>(
     ctx: Ctx<'js>,
     stream: Value<'js>,
@@ -707,21 +718,14 @@ fn write_all_step<'js>(
     total: usize,
 ) -> rquickjs::Result<Value<'js>> {
     // Check termination: buffer empty or stream done.
-    let state = Class::<StreamWritable>::from_value(&stream)
-        .map(|class| class.borrow().end.state)
-        .unwrap_or(CopyState::Done);
+    let class = Class::<StreamWritable>::from_value(&stream)?;
+    let state = class.borrow().end.state;
+    if state == CopyState::Done {
+        return Ok(Value::new_number(ctx, total as f64));
+    }
 
-    let buf_len = if let Some(arr) = buffer.as_array() {
-        arr.len()
-    } else if let Some(obj) = buffer.as_object() {
-        obj.get::<_, usize>("byteLength")
-            .or_else(|_| obj.get("length"))
-            .unwrap_or(0)
-    } else {
-        0
-    };
-
-    if buf_len == 0 || state == CopyState::Done {
+    let buffer_len = write_all_buffer_len(&buffer)?;
+    if buffer_len == 0 {
         return Ok(Value::new_number(ctx, total as f64));
     }
 
@@ -751,21 +755,52 @@ fn write_all_step<'js>(
                 .0
                 .into_iter()
                 .next()
-                .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
+                .ok_or_else(|| rquickjs::Error::new_from_js("undefined", "write count"))?;
 
-            let count: usize = count_val.get().unwrap_or(0);
-            let buf = buffer_c.take().unwrap().restore(&ctx)?;
+            let count: usize = count_val.get()?;
+            let buf = buffer_c
+                .take()
+                .ok_or_else(|| rquickjs::Error::new_from_js("undefined", "write buffer"))?
+                .restore(&ctx)?;
 
-            let sliced: Value = if let Some(obj) = buf.as_object() {
-                let slice_fn: Function = obj.get("slice")?;
-                let mut slice_args = function::Args::new(ctx.clone(), 1);
-                slice_args.this(buf.clone())?;
-                slice_args.push_arg(count)?;
-                slice_fn.call_arg(slice_args)?
-            } else {
-                Value::new_undefined(ctx.clone())
-            };
-            let s = stream_c.take().unwrap().restore(&ctx)?;
+            let s = stream_c
+                .take()
+                .ok_or_else(|| rquickjs::Error::new_from_js("undefined", "stream"))?
+                .restore(&ctx)?;
+
+            let buffer_len = write_all_buffer_len(&buf)?;
+            if count > buffer_len {
+                return Err(rquickjs::Exception::throw_range(
+                    &ctx,
+                    &format!("stream write reported {count} items for a {buffer_len}-item buffer"),
+                ));
+            }
+
+            let class = Class::<StreamWritable>::from_value(&s)?;
+            let state = class.borrow().end.state;
+            if count == 0 {
+                if state == CopyState::Done {
+                    return Ok(Value::new_number(ctx, total as f64));
+                }
+                return Err(rquickjs::Exception::throw_range(
+                    &ctx,
+                    "stream write made no progress",
+                ));
+            }
+            if state == CopyState::Done {
+                return Ok(Value::new_number(ctx, (total + count) as f64));
+            }
+
+            let obj = buf
+                .as_object()
+                .ok_or_else(|| rquickjs::Error::new_from_js(buf.type_of().as_str(), "array"))?;
+
+            let slice_fn: Function = obj.get("slice")?;
+            let mut slice_args = function::Args::new(ctx.clone(), 1);
+            slice_args.this(buf.clone())?;
+            slice_args.push_arg(count)?;
+            let sliced = slice_fn.call_arg(slice_args)?;
+
             write_all_step(ctx, s, sliced, total + count)
         },
     );

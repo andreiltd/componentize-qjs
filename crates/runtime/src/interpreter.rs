@@ -2,16 +2,17 @@
 use crate::CtxExt;
 use crate::abi::{CallbackCode, Event};
 use crate::bindings::register;
-use crate::resources::ResourceTable;
+use crate::resources::{ResourceClasses, ResourceTable};
 use crate::result::ResultBoundary;
 use crate::task::TaskState;
 use crate::trivia::{fn_lookup, iface_lookup};
+use crate::wit_imports::{FuncKind, WitImportRegistry, classify};
 use crate::{QjsCallContext, with_ctx};
 use crate::{abi, futures, streams};
 
 use heck::ToUpperCamelCase;
-use rquickjs::function::Constructor;
-use rquickjs::{JsLifetime, Value};
+use rquickjs::function::{Args, Constructor};
+use rquickjs::{Ctx, Function, JsLifetime, Object, Value};
 use wit_dylib_ffi::{ExportFunction, Interpreter, Resource, Wit};
 
 /// Newtype wrapper for `Wit` so it can be stored as rquickjs userdata.
@@ -20,6 +21,39 @@ pub(crate) struct WitData(pub(crate) Wit);
 
 /// quickjs interpreter implementation of the `Interpreter` trait.
 pub struct QjsInterpreter;
+
+/// Select the root or interface-scoped namespace for an exported function.
+fn export_scope<'js>(ctx: &Ctx<'js>, interface: Option<&'static str>) -> Object<'js> {
+    let exports = ctx
+        .user_module()
+        .exports(ctx)
+        .expect("user module exports not found");
+
+    match interface {
+        Some(interface) => exports
+            .get(iface_lookup(ctx, interface))
+            .unwrap_or_else(|err| panic!("interface '{interface}' not found: {err:?}")),
+        None => exports,
+    }
+}
+
+/// Call a JavaScript export and lower its return/throw through the WIT boundary.
+fn call_export<'js>(
+    ctx: &Ctx<'js>,
+    func: ExportFunction,
+    name: &str,
+    js_func: Function<'js>,
+    args: Args<'js>,
+    cx: &mut QjsCallContext,
+) {
+    let value = ResultBoundary::new(func.result())
+        .lower_call(ctx, js_func.call_arg::<Value>(args))
+        .unwrap_or_else(|err| panic!("Failed to call '{name}': {err:?}"));
+
+    if let Some(value) = value {
+        cx.push_value(ctx, value);
+    }
+}
 
 impl Interpreter for QjsInterpreter {
     type CallCx<'a> = QjsCallContext;
@@ -30,10 +64,12 @@ impl Interpreter for QjsInterpreter {
                 .expect("Failed to store WIT userdata");
             ctx.store_userdata(ResourceTable::default())
                 .expect("Failed to store ResourceTable userdata");
-            ctx.store_userdata(crate::resources::ResourceClasses::default())
+            ctx.store_userdata(ResourceClasses::default())
                 .expect("Failed to store ResourceClasses userdata");
             ctx.store_userdata(TaskState::new())
                 .expect("Failed to store TaskState userdata");
+            ctx.store_userdata(WitImportRegistry::new(wit))
+                .expect("Failed to store WIT import registry");
             register(ctx, wit).expect("Failed to register WIT bindings");
         });
     }
@@ -43,142 +79,61 @@ impl Interpreter for QjsInterpreter {
     }
 
     fn export_call(_wit: Wit, func: ExportFunction, cx: &mut Self::CallCx<'_>) {
-        let name = func.name();
-
-        if let Some(resource_name) = name.strip_prefix("[constructor]") {
-            // Resource constructor: call `new ClassName(args...)` and store in table
-            let class_name = resource_name.to_upper_camel_case();
-            with_ctx(|ctx| {
-                let exports = ctx
-                    .user_module()
-                    .exports(ctx)
-                    .expect("user module exports not found");
-
-                let ctor: Constructor = if let Some(iface) = func.interface() {
-                    let iface_obj: rquickjs::Object = exports
-                        .get(iface_lookup(ctx, iface))
-                        .unwrap_or_else(|e| panic!("interface '{}' not found: {:?}", iface, e));
-                    iface_obj
-                        .get(class_name.as_str())
-                        .unwrap_or_else(|e| panic!("class '{}' not found: {:?}", class_name, e))
-                } else {
-                    exports
-                        .get(class_name.as_str())
-                        .unwrap_or_else(|e| panic!("class '{}' not found: {:?}", class_name, e))
-                };
-
+        with_ctx(|ctx| match classify(func.name()) {
+            FuncKind::Constructor { resource } => {
+                let class_name = resource.to_upper_camel_case();
+                let scope = export_scope(ctx, func.interface());
+                let ctor: Constructor = scope
+                    .get(class_name.as_str())
+                    .unwrap_or_else(|err| panic!("class '{class_name}' not found: {err:?}"));
                 let args = cx.stack_into_args(ctx);
                 let instance: Value = ctor
                     .construct_args(args)
-                    .unwrap_or_else(|e| panic!("Failed to construct '{}': {:?}", class_name, e));
-
+                    .unwrap_or_else(|err| panic!("Failed to construct '{class_name}': {err:?}"));
                 cx.push_value(ctx, instance);
-            });
-        } else if let Some(rest) = name.strip_prefix("[method]") {
-            // Resource method: first arg is `self` (resource handle), call method on it
-            let (_resource, method_name) = rest
-                .split_once('.')
-                .unwrap_or_else(|| panic!("invalid method name: {name}"));
-
-            with_ctx(|ctx| {
-                let method_name = fn_lookup(ctx, method_name);
-                // First param is the resource (self)
+            }
+            FuncKind::Method { method, .. } => {
+                assert!(!method.is_empty(), "invalid method name: {}", func.name());
+                let method_name = fn_lookup(ctx, method);
                 let self_val = cx.pop_value(ctx);
                 let self_obj = self_val
                     .as_object()
                     .unwrap_or_else(|| panic!("method receiver is not an object"));
-
-                let method: rquickjs::Function = self_obj
+                let method: Function = self_obj
                     .get(method_name)
-                    .unwrap_or_else(|e| panic!("method '{}' not found: {:?}", method_name, e));
-
+                    .unwrap_or_else(|err| panic!("method '{method_name}' not found: {err:?}"));
                 let mut args = cx.stack_into_args(ctx);
                 args.this(self_val).expect("failed to set this");
-
-                let boundary = ResultBoundary::new(func.result());
-                let value = boundary
-                    .lower_call(ctx, method.call_arg::<Value>(args))
-                    .unwrap_or_else(|err| panic!("Failed to call '{}': {:?}", method_name, err));
-
-                if let Some(value) = value {
-                    cx.push_value(ctx, value);
-                }
-            });
-        } else if let Some(rest) = name.strip_prefix("[static]") {
-            // Static resource method: look up Class on the interface object,
-            // then call the static method on the class.
-            let (resource, method_name) = rest
-                .split_once('.')
-                .unwrap_or_else(|| panic!("invalid static method name: {name}"));
-
-            with_ctx(|ctx| {
-                let method_name = fn_lookup(ctx, method_name);
+                call_export(ctx, func, method_name, method, args, cx);
+            }
+            FuncKind::Static { resource, method } => {
+                assert!(
+                    !method.is_empty(),
+                    "invalid static method name: {}",
+                    func.name()
+                );
+                let method_name = fn_lookup(ctx, method);
                 let class_name = resource.to_upper_camel_case();
-                let exports = ctx
-                    .user_module()
-                    .exports(ctx)
-                    .expect("user module exports not found");
-
-                let class_obj: rquickjs::Object = if let Some(iface) = func.interface() {
-                    let iface_obj: rquickjs::Object = exports
-                        .get(iface_lookup(ctx, iface))
-                        .unwrap_or_else(|e| panic!("interface '{}' not found: {:?}", iface, e));
-                    iface_obj
-                        .get(class_name.as_str())
-                        .unwrap_or_else(|e| panic!("class '{}' not found: {:?}", class_name, e))
-                } else {
-                    exports
-                        .get(class_name.as_str())
-                        .unwrap_or_else(|e| panic!("class '{}' not found: {:?}", class_name, e))
-                };
-
-                let js_func: rquickjs::Function = class_obj.get(method_name).unwrap_or_else(|e| {
-                    panic!("static method '{}' not found: {:?}", method_name, e)
+                let scope = export_scope(ctx, func.interface());
+                let class: Object = scope
+                    .get(class_name.as_str())
+                    .unwrap_or_else(|err| panic!("class '{class_name}' not found: {err:?}"));
+                let js_func: Function = class.get(method_name).unwrap_or_else(|err| {
+                    panic!("static method '{method_name}' not found: {err:?}")
                 });
-
                 let args = cx.stack_into_args(ctx);
-                let boundary = ResultBoundary::new(func.result());
-                let value = boundary
-                    .lower_call(ctx, js_func.call_arg::<Value>(args))
-                    .unwrap_or_else(|err| panic!("Failed to call '{}': {:?}", method_name, err));
-
-                if let Some(value) = value {
-                    cx.push_value(ctx, value);
-                }
-            });
-        } else {
-            // Regular function
-            with_ctx(|ctx| {
-                let exports = ctx
-                    .user_module()
-                    .exports(ctx)
-                    .expect("user module exports not found");
-
-                let func_name = fn_lookup(ctx, name);
-                let js_func: rquickjs::Function = if let Some(iface) = func.interface() {
-                    let iface_obj: rquickjs::Object = exports
-                        .get(iface_lookup(ctx, iface))
-                        .unwrap_or_else(|e| panic!("interface '{}' not found: {:?}", iface, e));
-                    iface_obj
-                        .get(func_name)
-                        .unwrap_or_else(|e| panic!("function '{}' not found: {:?}", func_name, e))
-                } else {
-                    exports.get(func_name).unwrap_or_else(|e| {
-                        panic!("Failed to get function '{}': {:?}", func_name, e)
-                    })
-                };
-
+                call_export(ctx, func, method_name, js_func, args, cx);
+            }
+            FuncKind::Freestanding => {
+                let func_name = fn_lookup(ctx, func.name());
+                let scope = export_scope(ctx, func.interface());
+                let js_func: Function = scope
+                    .get(func_name)
+                    .unwrap_or_else(|err| panic!("function '{func_name}' not found: {err:?}"));
                 let args = cx.stack_into_args(ctx);
-                let boundary = ResultBoundary::new(func.result());
-                let value = boundary
-                    .lower_call(ctx, js_func.call_arg::<Value>(args))
-                    .unwrap_or_else(|err| panic!("Failed to call '{}': {:?}", func.name(), err));
-
-                if let Some(value) = value {
-                    cx.push_value(ctx, value);
-                }
-            });
-        }
+                call_export(ctx, func, func_name, js_func, args, cx);
+            }
+        });
     }
 
     fn export_async_start(

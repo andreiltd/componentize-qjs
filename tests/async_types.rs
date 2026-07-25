@@ -1194,6 +1194,75 @@ async fn test_stream_write_all_array() {
 }
 
 #[tokio::test]
+async fn test_stream_write_all_rejects_invalid_or_stalled_writes() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:stream-write-all-errors;
+            world stream-write-all-errors {
+                export rejects-invalid-buffer: async func() -> bool;
+                export rejects-no-progress: async func() -> bool;
+                export unused-stream: async func() -> stream<u8>;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            export async function rejectsInvalidBuffer() {
+                const { readable, writable } = wit.Stream();
+                try {
+                    await writable.writeAll(42);
+                    return false;
+                } catch {
+                    return true;
+                } finally {
+                    writable.drop();
+                    readable.drop();
+                }
+            }
+
+            export async function rejectsNoProgress() {
+                const { readable, writable } = wit.Stream();
+                const data = [1];
+                data.slice = () => [];
+                writable.write = async () => 0;
+                try {
+                    await writable.writeAll(data);
+                    return false;
+                } catch {
+                    return true;
+                } finally {
+                    writable.drop();
+                    readable.drop();
+                }
+            }
+
+            export async function unusedStream() {
+                throw new Error("not called");
+            }
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        instance
+            .call1_async("rejects-invalid-buffer", &[])
+            .await
+            .unwrap(),
+        Val::Bool(true)
+    );
+    assert_eq!(
+        instance
+            .call1_async("rejects-no-progress", &[])
+            .await
+            .unwrap(),
+        Val::Bool(true)
+    );
+}
+
+#[tokio::test]
 async fn test_stream_write_uint32_array() {
     // Verify the typed-array fast path handles wider primitive element types
     // (Uint32Array → stream<u32>): element-count semantics, not byte count.

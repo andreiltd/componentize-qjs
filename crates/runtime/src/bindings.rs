@@ -13,7 +13,7 @@ use crate::result::ResultBoundary;
 use crate::streams::{make_stream, register_stream_classes};
 use crate::task::Pending;
 use crate::trivia::iface_lookup;
-use crate::wit_imports::{FuncKind, WitInterface, classify, find_resource, root_bindings};
+use crate::wit_imports::{FuncKind, WitInterface, classify, find_resource};
 use crate::{DetHashSet, DetIndexMap, QjsCallContext, coerce_fn};
 
 /// Register all wit bindings on the js global scope.
@@ -21,7 +21,7 @@ pub(crate) fn register(ctx: &rquickjs::Ctx<'_>, wit_def: Wit) -> rquickjs::Resul
     register_stream_classes(ctx)?;
     register_future_classes(ctx)?;
     register_resource_classes(ctx, wit_def)?;
-    register_root_imports(ctx, wit_def)?;
+    register_root_imports(ctx)?;
     register_cqjs_namespace(ctx, wit_def)?;
     Ok(())
 }
@@ -180,9 +180,10 @@ pub(crate) fn interface_to_js<'js>(
     Ok(obj)
 }
 
-fn register_root_imports(ctx: &rquickjs::Ctx<'_>, wit_def: Wit) -> rquickjs::Result<()> {
+fn register_root_imports(ctx: &rquickjs::Ctx<'_>) -> rquickjs::Result<()> {
     let globals = ctx.globals();
-    let obj = interface_to_js(ctx, &root_bindings(wit_def))?;
+    let imports = ctx.wit_import_registry();
+    let obj = interface_to_js(ctx, imports.root())?;
 
     for key in obj.keys::<String>() {
         let key = key?;

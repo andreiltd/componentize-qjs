@@ -14,16 +14,27 @@ pub(crate) struct BufferGuard {
 }
 
 impl BufferGuard {
+    /// Allocate a new uninitialized buffer.
+    pub(crate) fn new_uninit(size: usize, align: usize) -> Self {
+        Self::allocate(size, align, false)
+    }
+
     /// Allocate a new zero-initialized buffer.
     ///
     /// Returns a guard with a dangling pointer for zero-size allocations
     /// https://doc.rust-lang.org/std/alloc/trait.GlobalAlloc.html#tymethod.alloc
     pub(crate) fn new_zeroed(size: usize, align: usize) -> Self {
+        Self::allocate(size, align, true)
+    }
+
+    fn allocate(size: usize, align: usize, zeroed: bool) -> Self {
         let layout = Layout::from_size_align(size, align).expect("invalid layout");
         let ptr = if size == 0 {
             std::ptr::NonNull::<u8>::dangling().as_ptr()
-        } else {
+        } else if zeroed {
             unsafe { std::alloc::alloc_zeroed(layout) }
+        } else {
+            unsafe { std::alloc::alloc(layout) }
         };
 
         if ptr.is_null() {

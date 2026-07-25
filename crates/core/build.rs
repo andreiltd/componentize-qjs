@@ -14,56 +14,55 @@ const BINARYEN_DL_URL: &str = "https://github.com/WebAssembly/binaryen/releases/
 const RUNTIME_AUDITABLE_ENV: &str = "COMPONENTIZE_QJS_RUNTIME_AUDITABLE";
 const MAX_ARCHIVE_BYTES: u64 = 1_000_000_000;
 
+/// Description of one embedded runtime artifact.
+///
+/// `fallback_const` is used for async constants when the async Cargo feature is
+/// disabled; in that configuration they alias the corresponding sync runtime.
 #[derive(Clone, Copy)]
 struct RuntimeBuild {
+    name: &'static str,
+    filename: &'static str,
+    const_name: &'static str,
     optimize_size: bool,
     async_support: bool,
+    fallback_const: Option<&'static str>,
 }
 
-impl RuntimeBuild {
-    const DEFAULT: Self = Self {
-        optimize_size: false,
-        async_support: true,
-    };
-    const OPT_SIZE: Self = Self {
-        optimize_size: true,
-        async_support: true,
-    };
-    const DEFAULT_SYNC: Self = Self {
+/// All runtime artifacts in generated-constant order.
+const RUNTIME_BUILDS: [RuntimeBuild; 4] = [
+    RuntimeBuild {
+        name: "default-sync",
+        filename: "runtime-sync.wasm",
+        const_name: "DEFAULT_SYNC_RUNTIME_WASM",
         optimize_size: false,
         async_support: false,
-    };
-    const OPT_SIZE_SYNC: Self = Self {
+        fallback_const: None,
+    },
+    RuntimeBuild {
+        name: "opt-size-sync",
+        filename: "runtime-opt-size-sync.wasm",
+        const_name: "OPT_SIZE_SYNC_RUNTIME_WASM",
         optimize_size: true,
         async_support: false,
-    };
-
-    fn name(self) -> &'static str {
-        match (self.optimize_size, self.async_support) {
-            (false, true) => "default",
-            (true, true) => "opt-size",
-            (false, false) => "default-sync",
-            (true, false) => "opt-size-sync",
-        }
-    }
-
-    fn filename(self) -> &'static str {
-        match (self.optimize_size, self.async_support) {
-            (false, true) => "runtime.wasm",
-            (true, true) => "runtime-opt-size.wasm",
-            (false, false) => "runtime-sync.wasm",
-            (true, false) => "runtime-opt-size-sync.wasm",
-        }
-    }
-
-    fn optimize_size(self) -> bool {
-        self.optimize_size
-    }
-
-    fn async_support(self) -> bool {
-        self.async_support
-    }
-}
+        fallback_const: None,
+    },
+    RuntimeBuild {
+        name: "default",
+        filename: "runtime.wasm",
+        const_name: "DEFAULT_RUNTIME_WASM",
+        optimize_size: false,
+        async_support: true,
+        fallback_const: Some("DEFAULT_SYNC_RUNTIME_WASM"),
+    },
+    RuntimeBuild {
+        name: "opt-size",
+        filename: "runtime-opt-size.wasm",
+        const_name: "OPT_SIZE_RUNTIME_WASM",
+        optimize_size: true,
+        async_support: true,
+        fallback_const: Some("OPT_SIZE_SYNC_RUNTIME_WASM"),
+    },
+];
 
 struct CargoProfile {
     name: String,
@@ -99,22 +98,45 @@ impl CargoProfile {
         if !self.release {
             set_env_if_unset(cargo, "CARGO_PROFILE_DEV_DEBUG", "0");
         }
+        // Runtime target directories are disposable, so incremental state
+        // cannot be reused after this build script finishes.
         set_env_if_unset(cargo, "CARGO_INCREMENTAL", "0");
     }
 }
 
-/// Resolved Wasm paths for each embedded runtime variant.
+type RuntimePaths = [Option<PathBuf>; RUNTIME_BUILDS.len()];
+
+/// Shared nested Cargo targets for speed- and size-optimized variants.
 ///
-/// The non-async variants are always present. The async variants are `None`
-/// when the `component-model-async` feature is disabled, in which case the
-/// generated `DEFAULT_RUNTIME_WASM` / `OPT_SIZE_RUNTIME_WASM` constants alias
-/// the non-async variants (preserving the historical non-async-by-default
-/// behavior).
-struct RuntimePaths {
-    default_sync: PathBuf,
-    opt_size_sync: PathBuf,
-    default_async: Option<PathBuf>,
-    opt_size_async: Option<PathBuf>,
+/// Sync and async builds with the same optimization flags share dependencies.
+/// Both directories remain alive until every variant has finished.
+struct RuntimeTargetDirs {
+    default: PathBuf,
+    opt_size: PathBuf,
+}
+
+impl RuntimeTargetDirs {
+    fn new(out_dir: &Path) -> Self {
+        Self {
+            default: out_dir.join("runtime-default"),
+            opt_size: out_dir.join("runtime-opt-size"),
+        }
+    }
+
+    fn get(&self, optimize_size: bool) -> &Path {
+        if optimize_size {
+            &self.opt_size
+        } else {
+            &self.default
+        }
+    }
+}
+
+impl Drop for RuntimeTargetDirs {
+    fn drop(&mut self) {
+        cleanup_runtime_target_dir(&self.default);
+        cleanup_runtime_target_dir(&self.opt_size);
+    }
 }
 
 fn main() -> Result<()> {
@@ -157,93 +179,60 @@ fn main() -> Result<()> {
     }
 
     let profile = CargoProfile::current();
-    // Non-async runtimes are always embedded; async runtimes only when the feature is on.
-    let default_sync = build_runtime(&out_dir, RuntimeBuild::DEFAULT_SYNC, &profile)?;
-    let opt_size_sync = build_runtime(&out_dir, RuntimeBuild::OPT_SIZE_SYNC, &profile)?;
-    let (default_async, opt_size_async) = if async_on {
-        (
-            Some(build_runtime(&out_dir, RuntimeBuild::DEFAULT, &profile)?),
-            Some(build_runtime(&out_dir, RuntimeBuild::OPT_SIZE, &profile)?),
-        )
-    } else {
-        (None, None)
-    };
+    let target_dirs = RuntimeTargetDirs::new(&out_dir);
+    let mut paths = RuntimePaths::default();
 
-    emit_runtime_wasms(
-        &RuntimePaths {
-            default_sync,
-            opt_size_sync,
-            default_async,
-            opt_size_async,
-        },
-        &out_dir,
-    )
+    for (index, build) in RUNTIME_BUILDS.iter().copied().enumerate() {
+        if build.async_support && !async_on {
+            continue;
+        }
+        paths[index] = Some(build_runtime(&out_dir, &target_dirs, build, &profile)?);
+    }
+
+    emit_runtime_wasms(&paths, &out_dir)
 }
 
 /// Emit runtime constants from the pre-built runtimes packaged with the crate.
 fn emit_from_prebuilt(prebuilt_dir: &Path, async_on: bool, out_dir: &Path) -> Result<()> {
-    let default_sync = prebuilt_dir.join("runtime-sync.wasm");
-    let opt_size_sync = prebuilt_dir.join("runtime-opt-size-sync.wasm");
+    let mut paths = RuntimePaths::default();
+    for (index, build) in RUNTIME_BUILDS.iter().copied().enumerate() {
+        if build.async_support && !async_on {
+            continue;
+        }
 
-    if !opt_size_sync.exists() {
-        bail!(
-            "Pre-built non-async runtime exists at {} but opt-size non-async runtime is missing \
-             at {}. If installing from crates.io, this is a packaging bug.",
-            default_sync.display(),
-            opt_size_sync.display(),
-        );
-    }
-
-    let (default_async, opt_size_async) = if async_on {
-        let default_async = prebuilt_dir.join("runtime.wasm");
-        let opt_size_async = prebuilt_dir.join("runtime-opt-size.wasm");
-        if !default_async.exists() || !opt_size_async.exists() {
+        let path = prebuilt_dir.join(build.filename);
+        if !path.exists() {
             bail!(
-                "Pre-built async runtimes are missing at {} / {} while the \
-                 component-model-async feature is enabled. If installing from crates.io, \
+                "Pre-built {} runtime is missing at {}. If installing from crates.io, \
                  this is a packaging bug.",
-                default_async.display(),
-                opt_size_async.display(),
+                build.name,
+                path.display(),
             );
         }
-        (Some(default_async), Some(opt_size_async))
-    } else {
-        (None, None)
-    };
+        paths[index] = Some(path);
+    }
 
     eprintln!("Using prebuilt runtimes from: {}", prebuilt_dir.display());
 
-    emit_runtime_wasms(
-        &RuntimePaths {
-            default_sync,
-            opt_size_sync,
-            default_async,
-            opt_size_async,
-        },
-        out_dir,
-    )
+    emit_runtime_wasms(&paths, out_dir)
 }
 
 fn emit_runtime_wasms(paths: &RuntimePaths, out_dir: &Path) -> Result<()> {
     let mut output = String::new();
-    output.push_str(&const_line(
-        "DEFAULT_SYNC_RUNTIME_WASM",
-        &paths.default_sync,
-    ));
-    output.push_str(&const_line(
-        "OPT_SIZE_SYNC_RUNTIME_WASM",
-        &paths.opt_size_sync,
-    ));
-
-    match &paths.default_async {
-        Some(path) => output.push_str(&const_line("DEFAULT_RUNTIME_WASM", path)),
-        None => output.push_str("const DEFAULT_RUNTIME_WASM: &[u8] = DEFAULT_SYNC_RUNTIME_WASM;\n"),
-    }
-    match &paths.opt_size_async {
-        Some(path) => output.push_str(&const_line("OPT_SIZE_RUNTIME_WASM", path)),
-        None => {
-            output.push_str("const OPT_SIZE_RUNTIME_WASM: &[u8] = OPT_SIZE_SYNC_RUNTIME_WASM;\n")
+    for (build, path) in RUNTIME_BUILDS.iter().zip(paths) {
+        if let Some(path) = path {
+            output.push_str(&const_line(build.const_name, path));
+            continue;
         }
+
+        let Some(fallback_const) = build.fallback_const else {
+            bail!("missing {} runtime artifact", build.name);
+        };
+
+        output.push_str(&format!(
+            "const {}: &[u8] = {fallback_const};\n",
+            build.const_name
+        ));
     }
 
     fs::write(out_dir.join("output.rs"), output).context("Failed to write output.rs")?;
@@ -261,7 +250,12 @@ fn set_env_if_unset(cargo: &mut Command, key: &str, value: &str) {
     }
 }
 
-fn build_runtime(out_dir: &Path, build: RuntimeBuild, profile: &CargoProfile) -> Result<PathBuf> {
+fn build_runtime(
+    out_dir: &Path,
+    target_dirs: &RuntimeTargetDirs,
+    build: RuntimeBuild,
+    profile: &CargoProfile,
+) -> Result<PathBuf> {
     let target = "wasm32-wasip2";
     let upcase = target.to_uppercase().replace('-', "_");
 
@@ -269,12 +263,12 @@ fn build_runtime(out_dir: &Path, build: RuntimeBuild, profile: &CargoProfile) ->
     let wasi_sdk = get_wasi_sdk(out_dir)?;
     eprintln!("Using wasi-sdk at: {}", wasi_sdk.display());
 
-    let optimize_size = build.optimize_size();
+    let optimize_size = build.optimize_size;
     let rustflags = profile.runtime_rustflags(optimize_size);
     let cflags = profile.runtime_cflags(optimize_size);
 
     let clang = executable(&wasi_sdk, "bin/clang");
-    let target_dir = out_dir.join(format!("runtime-{}", build.name()));
+    let target_dir = target_dirs.get(optimize_size);
     let mut cargo = Command::new("cargo");
     if env::var_os(RUNTIME_AUDITABLE_ENV).is_some() {
         cargo.arg("auditable");
@@ -285,7 +279,7 @@ fn build_runtime(out_dir: &Path, build: RuntimeBuild, profile: &CargoProfile) ->
         .arg(target)
         .arg("--package=componentize-qjs-runtime")
         .arg("--no-default-features")
-        .env("CARGO_TARGET_DIR", &target_dir)
+        .env("CARGO_TARGET_DIR", target_dir)
         .env(format!("CARGO_TARGET_{upcase}_RUSTFLAGS"), rustflags)
         .env(format!("CARGO_TARGET_{upcase}_LINKER"), &clang)
         .env(format!("CFLAGS_{}", target.replace('-', "_")), cflags)
@@ -300,14 +294,14 @@ fn build_runtime(out_dir: &Path, build: RuntimeBuild, profile: &CargoProfile) ->
         cargo.arg("--release");
     }
 
-    if build.async_support() {
+    if build.async_support {
         cargo.arg("--features").arg("component-model-async");
     }
 
-    eprintln!("Building {} runtime: {cargo:?}", build.name());
+    eprintln!("Building {} runtime: {cargo:?}", build.name);
     let status = cargo.status().context("Failed to run cargo build")?;
     if !status.success() {
-        bail!("Failed to build {} runtime", build.name());
+        bail!("Failed to build {} runtime", build.name);
     }
 
     let runtime_src = target_dir
@@ -315,7 +309,7 @@ fn build_runtime(out_dir: &Path, build: RuntimeBuild, profile: &CargoProfile) ->
         .join(&profile.name)
         .join("componentize_qjs_runtime.wasm");
 
-    let runtime_dst = out_dir.join(build.filename());
+    let runtime_dst = out_dir.join(build.filename);
 
     fs::copy(&runtime_src, &runtime_dst)
         .with_context(|| format!("Failed to copy {}", runtime_src.display()))?;
@@ -342,17 +336,19 @@ fn build_runtime(out_dir: &Path, build: RuntimeBuild, profile: &CargoProfile) ->
         }
     }
 
-    cleanup_runtime_target_dir(&target_dir);
-
     Ok(runtime_dst)
 }
 
 fn cleanup_runtime_target_dir(target_dir: &Path) {
-    if let Err(err) = fs::remove_dir_all(target_dir) {
-        eprintln!(
-            "warning: failed to clean nested runtime target dir {}: {err}",
-            target_dir.display()
-        );
+    match fs::remove_dir_all(target_dir) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            eprintln!(
+                "warning: failed to clean nested runtime target dir {}: {err}",
+                target_dir.display()
+            );
+        }
     }
 }
 
@@ -472,6 +468,7 @@ fn http_archive(url: &str, out_dir: &Path) -> Result<()> {
         .take(MAX_ARCHIVE_BYTES + 1)
         .read_to_end(&mut bytes)
         .context("Failed to download archive")?;
+
     if bytes.len() as u64 > MAX_ARCHIVE_BYTES {
         bail!("Archive exceeds maximum download size of {MAX_ARCHIVE_BYTES} bytes");
     }

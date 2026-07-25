@@ -1,8 +1,10 @@
 //! `Call` trait implementation for quickjs to/from wit type conversions.
 use crate::CtxExt;
+use crate::buffer::BufferGuard;
 use crate::futures::{FutureReadable, FutureWritable};
 use crate::resources::{exported_resource_to_handle, imported_resource_to_handle};
 use crate::streams::{StreamReadable, StreamWritable};
+use crate::tagged::decode_tagged;
 use crate::trivia::fn_lookup;
 use crate::{BorrowedResource, QjsCallContext, with_ctx};
 
@@ -62,27 +64,29 @@ fn set_imported_prototype<'js>(
     }
 }
 
-/// Extract a TypedArray<T> and memcpy its bytes into a new buffer.
-/// This has to be macro because TypedArrayItem trait is not public.
+fn copy_typed_array<T>(slice: &[T]) -> (*const u8, usize, Layout) {
+    let count = slice.len();
+    let byte_len = count
+        .checked_mul(std::mem::size_of::<T>())
+        .expect("typed array byte length overflow");
+
+    let buffer = BufferGuard::new_uninit(byte_len, std::mem::align_of::<T>());
+    if byte_len > 0 {
+        unsafe {
+            std::ptr::copy_nonoverlapping(slice.as_ptr().cast::<u8>(), buffer.ptr(), byte_len)
+        };
+    }
+    let (ptr, layout) = buffer.into_raw();
+    (ptr.cast_const(), count, layout)
+}
+
+/// Extract a TypedArray<T> and copy its bytes into a new buffer.
+/// This has to be a macro because TypedArrayItem is not public.
 macro_rules! try_typed_array_copy {
     ($val:expr, $t:ty) => {
         $val.as_object()
-            .and_then(|o| o.as_typed_array::<$t>())
-            .map(|ta| {
-                let slice: &[$t] = ta.as_ref();
-                let count = slice.len();
-                let byte_len = count * std::mem::size_of::<$t>();
-                let layout = Layout::from_size_align(byte_len, std::mem::align_of::<$t>()).unwrap();
-                let buf = if byte_len == 0 {
-                    std::ptr::NonNull::<u8>::dangling().as_ptr()
-                } else {
-                    let buf = unsafe { std::alloc::alloc(layout) };
-                    let ptr = slice.as_ptr() as *const u8;
-                    unsafe { std::ptr::copy_nonoverlapping(ptr, buf, byte_len) };
-                    buf
-                };
-                (buf as *const u8, count, layout)
-            })
+            .and_then(|object| object.as_typed_array::<$t>())
+            .map(|array| copy_typed_array::<$t>(array.as_ref()))
     };
 }
 
@@ -225,15 +229,13 @@ impl Call for QjsCallContext {
 
             if option_is_nested(ty) {
                 // Nested option: { tag: "some", val } | { tag: "none" }.
-                let obj = val.as_object().expect("expected nested option object");
-                let tag: String = obj.get("tag").expect("expected tag");
-                if tag == "some" {
-                    let inner: Value = obj.get("val").unwrap_or(Value::new_undefined(ctx.clone()));
+                let (discriminant, payload) =
+                    decode_tagged(ctx, val, "nested option", [("none", false), ("some", true)])
+                        .unwrap_or_else(|err| panic!("invalid nested option: {err}"));
+                if let Some(inner) = payload {
                     self.stack.push(Persistent::save(ctx, inner));
-                    1
-                } else {
-                    0
                 }
+                u32::try_from(discriminant).expect("nested option discriminant overflow")
             } else if val.is_null() || val.is_undefined() {
                 0
             } else {
@@ -247,23 +249,17 @@ impl Call for QjsCallContext {
         let persistent = self.stack.pop().expect("stack underflow");
         with_ctx(|ctx| {
             let val = persistent.restore(ctx).unwrap();
-            let obj = val.as_object().expect("expected object");
-            let tag: String = obj.get("tag").expect("expected tag");
-
-            let is_err = tag != "ok";
-            let discriminant = if is_err { 1u32 } else { 0u32 };
-            let has_payload = if is_err {
-                ty.err().is_some()
-            } else {
-                ty.ok().is_some()
-            };
-
-            if has_payload {
-                let inner: Value = obj.get("val").unwrap_or(Value::new_undefined(ctx.clone()));
+            let (discriminant, payload) = decode_tagged(
+                ctx,
+                val,
+                "result",
+                [("ok", ty.ok().is_some()), ("err", ty.err().is_some())],
+            )
+            .unwrap_or_else(|err| panic!("invalid result: {err}"));
+            if let Some(inner) = payload {
                 self.stack.push(Persistent::save(ctx, inner));
             }
-
-            discriminant
+            u32::try_from(discriminant).expect("result discriminant overflow")
         })
     }
 
@@ -271,26 +267,17 @@ impl Call for QjsCallContext {
         let persistent = self.stack.pop().expect("stack underflow");
         with_ctx(|ctx| {
             let val = persistent.restore(ctx).unwrap();
-            let obj = val.as_object().expect("expected object");
-            let tag: String = obj.get("tag").expect("expected tag");
-
-            let index = ty
+            let cases = ty
                 .cases()
-                .position(|(name, _)| tag == name)
-                .unwrap_or_else(|| panic!("unknown variant case: {tag}"))
-                as u32;
+                .map(|(name, payload_ty)| (name, payload_ty.is_some()));
 
-            let has_payload = ty
-                .cases()
-                .nth(index as usize)
-                .map(|(_, case_ty)| case_ty.is_some())
-                .unwrap_or(false);
+            let (discriminant, payload) = decode_tagged(ctx, val, "variant", cases)
+                .unwrap_or_else(|err| panic!("invalid variant: {err}"));
 
-            if has_payload {
-                let inner: Value = obj.get("val").unwrap_or(Value::new_undefined(ctx.clone()));
+            if let Some(inner) = payload {
                 self.stack.push(Persistent::save(ctx, inner));
             }
-            index
+            u32::try_from(discriminant).expect("variant discriminant overflow")
         })
     }
 

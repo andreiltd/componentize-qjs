@@ -92,8 +92,12 @@ pub async fn run(args: Vec<String>) -> Result<()> {
         let allocator = Allocator::default();
         let source_type = SourceType::mjs();
         let ret = OxcParser::new(&allocator, &js_source, source_type).parse();
-        let mut program = ret.program;
 
+        if let Some(diagnostic) = ret.diagnostics.first() {
+            anyhow::bail!("failed to parse JavaScript before minification: {diagnostic}");
+        }
+
+        let mut program = ret.program;
         let options = MinifierOptions {
             mangle: Some(MangleOptions {
                 top_level: Some(false),
@@ -105,6 +109,7 @@ pub async fn run(args: Vec<String>) -> Result<()> {
                 ..CompressOptions::default()
             }),
         };
+
         let ret = Minifier::new(options).minify(&allocator, &mut program);
         Codegen::new()
             .with_scoping(ret.scoping)
@@ -119,14 +124,15 @@ pub async fn run(args: Vec<String>) -> Result<()> {
     println!("  JS:     {}", args.js.display());
     println!("  Output: {}", args.output.display());
 
-    let runtime = match &args.runtime {
-        Some(file) => Runtime::Custom(&fs::read(file)?),
-        None => match (args.sync, args.opt_size) {
-            (true, true) => Runtime::OptSizeSync,
-            (true, false) => Runtime::DefaultSync,
-            (false, true) => Runtime::OptSize,
-            (false, false) => Runtime::default(),
-        },
+    let custom_runtime = args
+        .runtime
+        .as_ref()
+        .map(|file| fs::read(file).context("failed to read runtime file"))
+        .transpose()?;
+
+    let runtime = match custom_runtime.as_deref() {
+        Some(wasm) => Runtime::Custom(wasm),
+        None => Runtime::builtin(args.sync, args.opt_size),
     };
 
     if args.stub_wasi {
