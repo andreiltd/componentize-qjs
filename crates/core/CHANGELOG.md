@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3](https://github.com/andreiltd/componentize-qjs/compare/componentize-qjs-v0.4.2...componentize-qjs-v0.4.3) - 2026-07-25
+
+### Bug Fixes
+
+- *(deps)* update rust dependencies to v47 ([#67](https://github.com/andreiltd/componentize-qjs/pull/67))
+- *(deps)* update rust dependencies ([#65](https://github.com/andreiltd/componentize-qjs/pull/65))
+
+### Features
+
+- support async iterables for component streams ([#69](https://github.com/andreiltd/componentize-qjs/pull/69))
+
+### Refactoring
+
+- simplify and harden runtime internals ([#70](https://github.com/andreiltd/componentize-qjs/pull/70))
+
 ## [0.4.2](https://github.com/andreiltd/componentize-qjs/compare/componentize-qjs-v0.4.1...componentize-qjs-v0.4.2) - 2026-07-03
 
 ### Miscellaneous
