@@ -1,34 +1,28 @@
 //! Code generation for the JS shim that bridges WIT types to the quickjs runtime.
 
-use indexmap::IndexSet;
 use std::collections::{HashMap, HashSet};
-use wit_parser::{Resolve, Type, TypeDefKind, TypeId, TypeOwner, WorldId, WorldItem};
+use wit_dylib::metadata;
+use wit_parser::{Resolve, Type, TypeDefKind, TypeId, TypeOwner};
 
 /// Generate a JS shim from WIT metadata that sets up stream/future factories.
-pub fn generate_shim(resolve: &Resolve, world_id: WorldId) -> String {
-    let mut ctx = EmitContext::new(resolve, world_id);
+pub fn generate_shim(resolve: &Resolve, metadata: &wit_dylib::Metadata) -> String {
+    let mut ctx = EmitContext::new(resolve, metadata);
     ctx.emit();
     ctx.output()
 }
 
 struct EmitContext<'a> {
     resolve: &'a Resolve,
-    world_id: WorldId,
+    metadata: &'a wit_dylib::Metadata,
     lines: Vec<String>,
-    streams: IndexSet<Option<Type>>,
-    futures: IndexSet<Option<Type>>,
-    visited_types: HashSet<TypeId>,
 }
 
 impl<'a> EmitContext<'a> {
-    fn new(resolve: &'a Resolve, world_id: WorldId) -> Self {
+    fn new(resolve: &'a Resolve, metadata: &'a wit_dylib::Metadata) -> Self {
         Self {
             resolve,
-            world_id,
+            metadata,
             lines: Vec::new(),
-            streams: IndexSet::new(),
-            futures: IndexSet::new(),
-            visited_types: HashSet::new(),
         }
     }
 
@@ -36,160 +30,178 @@ impl<'a> EmitContext<'a> {
         self.lines.push(s.to_string());
     }
 
+    fn multiline(&mut self, s: &str) {
+        self.lines.extend(s.lines().map(str::to_string));
+    }
+
     fn output(self) -> String {
         self.lines.join("\n") + "\n"
     }
 
     fn emit(&mut self) {
-        let world = &self.resolve.worlds[self.world_id];
-
-        for item in world.imports.values() {
-            self.collect_from_world_item(item);
-        }
-
-        for item in world.exports.values() {
-            if let WorldItem::Function(f) = item {
-                self.collect_from_function(f);
-            }
-        }
-
-        for item in world.exports.values() {
-            if let WorldItem::Interface { id, .. } = item {
-                for f in self.resolve.interfaces[*id].functions.values() {
-                    self.collect_from_function(f);
-                }
-            }
-        }
-
         self.line("const wit = globalThis.wit = {};");
 
-        let streams: Vec<_> = self.streams.iter().copied().collect();
+        let streams = self
+            .metadata
+            .streams
+            .iter()
+            .map(|stream| async_payload(self.resolve, stream.id, true))
+            .collect::<Vec<_>>();
+
         if !streams.is_empty() {
-            self.emit_constructor("Stream", "__cqjs.makeStream", &streams);
+            let (aliases, _) = async_aliases(self.resolve, self.metadata);
+            self.emit_constructor("Stream", "__cqjs.makeStream", &streams, &aliases);
         }
 
-        let futures: Vec<_> = self.futures.iter().copied().collect();
+        let futures = self
+            .metadata
+            .futures
+            .iter()
+            .map(|future| async_payload(self.resolve, future.id, false))
+            .collect::<Vec<_>>();
+
         if !futures.is_empty() {
-            self.emit_constructor("Future", "__cqjs.makeFuture", &futures);
+            let (_, aliases) = async_aliases(self.resolve, self.metadata);
+            self.emit_constructor("Future", "__cqjs.makeFuture", &futures, &aliases);
         }
     }
 
-    fn emit_constructor(&mut self, name: &str, native_fn: &str, types: &[Option<Type>]) {
+    fn emit_constructor(
+        &mut self,
+        name: &str,
+        native_fn: &str,
+        types: &[Option<Type>],
+        aliases: &[Vec<TypeId>],
+    ) {
         if types.len() == 1 {
             self.line(&format!(
                 "wit.{name} = function(type) {{ return {native_fn}(type ?? 0); }};"
             ));
         } else {
-            self.line(&format!("wit.{name} = function(type) {{"));
-            self.line(&format!(
-                "  if (type === undefined) throw new Error('{name} type required, use wit.{name}.<TYPE>');"
+            self.multiline(&format!(
+                r#"wit.{name} = function(type) {{
+                  if (type === undefined) throw new Error('{name} type required, use wit.{name}.<TYPE>');
+                  return {native_fn}(type);
+                }};"#
             ));
-            self.line(&format!("  return {native_fn}(type);"));
-            self.line("};");
         }
 
         self.line(&format!("wit.{name}.types = {{}};"));
-        for (index, const_name) in unique_const_names(self.resolve, types)
-            .into_iter()
-            .enumerate()
-        {
-            self.line(&format!(
-                "wit.{name}.{const_name} = {index}; wit.{name}.types.{const_name} = {index};"
-            ));
+
+        let primary_names = unique_const_names(self.resolve, types);
+        let mut emitted = HashMap::<String, usize>::new();
+        let mut used = HashSet::new();
+
+        for (index, const_name) in primary_names.into_iter().enumerate() {
+            self.emit_type_constant(name, &const_name, index);
+            used.insert(const_name.clone());
+            emitted.insert(const_name, index);
+        }
+
+        for (index, type_aliases) in aliases.iter().enumerate() {
+            for alias in type_aliases {
+                let local = typedef_const_name(self.resolve, *alias, ConstNameStyle::Local);
+                let candidate = match emitted.get(&local) {
+                    Some(existing) if *existing == index => continue,
+                    Some(_) => typedef_const_name(self.resolve, *alias, ConstNameStyle::Qualified),
+                    None => local,
+                };
+
+                if emitted
+                    .get(&candidate)
+                    .is_some_and(|existing| *existing == index)
+                {
+                    continue;
+                }
+
+                let const_name = unique_name(candidate, &mut used);
+                self.emit_type_constant(name, &const_name, index);
+                emitted.insert(const_name, index);
+            }
+        }
+
+        if name == "Stream" {
+            self.multiline(
+                r#"wit.Stream.from = function(iterable, type) {
+                      const { readable, writable } = wit.Stream(type);
+                      const completion = (async () => {
+                        try {
+                          for await (const item of iterable) {
+                            if (!await writable.writeIterableItem(item)) break;
+                          }
+                        } finally {
+                          writable.drop();
+                        }
+                      })();
+                      return { readable, completion };
+                    };"#,
+            );
         }
     }
 
-    fn collect_from_world_item(&mut self, item: &WorldItem) {
-        match item {
-            WorldItem::Function(f) => {
-                self.collect_from_function(f);
-            }
-            WorldItem::Interface { id, .. } => {
-                for f in self.resolve.interfaces[*id].functions.values() {
-                    self.collect_from_function(f);
-                }
-            }
-            WorldItem::Type { id, .. } => {
-                self.collect_from_type_id(*id);
-            }
+    fn emit_type_constant(&mut self, constructor: &str, const_name: &str, index: usize) {
+        self.line(&format!(
+            "wit.{constructor}.{const_name} = {index}; wit.{constructor}.types.{const_name} = {index};"
+        ));
+    }
+}
+
+fn async_payload(resolve: &Resolve, id: TypeId, stream: bool) -> Option<Type> {
+    match &resolve.types[id].kind {
+        TypeDefKind::Stream(ty) if stream => *ty,
+        TypeDefKind::Future(ty) if !stream => *ty,
+        _ => unreachable!("metadata async type does not match WIT type"),
+    }
+}
+
+fn async_aliases(
+    resolve: &Resolve,
+    metadata: &wit_dylib::Metadata,
+) -> (Vec<Vec<TypeId>>, Vec<Vec<TypeId>>) {
+    let mut streams = vec![Vec::new(); metadata.streams.len()];
+    let mut futures = vec![Vec::new(); metadata.futures.len()];
+
+    for (index, stream) in metadata.streams.iter().enumerate() {
+        if resolve.types[stream.id].name.is_some() {
+            streams[index].push(stream.id);
+        }
+    }
+    for (index, future) in metadata.futures.iter().enumerate() {
+        if resolve.types[future.id].name.is_some() {
+            futures[index].push(future.id);
         }
     }
 
-    fn collect_from_function(&mut self, func: &wit_parser::Function) {
-        for param in &func.params {
-            self.collect_from_type(&param.ty);
-        }
-        if let Some(result) = &func.result {
-            self.collect_from_type(result);
-        }
-    }
-
-    fn collect_from_type(&mut self, ty: &Type) {
-        if let Type::Id(id) = ty {
-            self.collect_from_type_id(*id);
+    for alias in &metadata.aliases {
+        match resolve_metadata_async_type(metadata, alias.ty) {
+            Some(MetadataAsyncType::Stream(index)) => streams[index].push(alias.id),
+            Some(MetadataAsyncType::Future(index)) => futures[index].push(alias.id),
+            None => {}
         }
     }
 
-    fn collect_from_type_id(&mut self, id: TypeId) {
-        if !self.visited_types.insert(id) {
-            return;
-        }
+    (streams, futures)
+}
 
-        let typedef = &self.resolve.types[id];
-        match &typedef.kind {
-            TypeDefKind::Stream(elem) => {
-                if let Some(elem) = elem {
-                    self.collect_from_type(elem);
-                }
-                self.streams.insert(*elem);
+#[derive(Clone, Copy)]
+enum MetadataAsyncType {
+    Stream(usize),
+    Future(usize),
+}
+
+fn resolve_metadata_async_type(
+    metadata: &wit_dylib::Metadata,
+    mut ty: metadata::Type,
+) -> Option<MetadataAsyncType> {
+    let mut visited = HashSet::new();
+    loop {
+        match ty {
+            metadata::Type::Stream(index) => return Some(MetadataAsyncType::Stream(index)),
+            metadata::Type::Future(index) => return Some(MetadataAsyncType::Future(index)),
+            metadata::Type::Alias(index) if visited.insert(index) => {
+                ty = metadata.aliases[index].ty;
             }
-            TypeDefKind::Future(elem) => {
-                if let Some(elem) = elem {
-                    self.collect_from_type(elem);
-                }
-                self.futures.insert(*elem);
-            }
-            TypeDefKind::Record(r) => {
-                let tys: Vec<_> = r.fields.iter().map(|f| f.ty).collect();
-                for ty in &tys {
-                    self.collect_from_type(ty);
-                }
-            }
-            TypeDefKind::Tuple(t) => {
-                let tys = t.types.clone();
-                for ty in &tys {
-                    self.collect_from_type(ty);
-                }
-            }
-            TypeDefKind::Variant(v) => {
-                let tys: Vec<_> = v.cases.iter().filter_map(|c| c.ty).collect();
-                for ty in &tys {
-                    self.collect_from_type(ty);
-                }
-            }
-            TypeDefKind::Option(ty) => {
-                let ty = *ty;
-                self.collect_from_type(&ty);
-            }
-            TypeDefKind::Result(r) => {
-                let ok = r.ok;
-                let err = r.err;
-                if let Some(ty) = &ok {
-                    self.collect_from_type(ty);
-                }
-                if let Some(ty) = &err {
-                    self.collect_from_type(ty);
-                }
-            }
-            TypeDefKind::List(ty) => {
-                let ty = *ty;
-                self.collect_from_type(&ty);
-            }
-            TypeDefKind::Type(ty) => {
-                let ty = *ty;
-                self.collect_from_type(&ty);
-            }
-            _ => {}
+            _ => return None,
         }
     }
 }

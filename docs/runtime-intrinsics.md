@@ -98,6 +98,18 @@ const { readable, writable } = wit.Stream(wit.Stream.U8);
 
 If only one stream type exists in the WIT world, `type` may be omitted.
 
+### `wit.Stream.from(iterable, type)`
+
+Create a stream backed by a synchronous or asynchronous iterable. Returns
+`{ readable, completion }`, where `completion` settles when the iterable has
+finished or its producer fails. The `type` may be omitted if only one stream
+type exists.
+
+WIT function boundaries use this adapter automatically. When a JavaScript
+iterable is passed to or returned from a WIT function, the expected stream type
+comes from that function's signature. Iterable adaptation must happen while an
+async component call is active.
+
 ### `wit.Future(type)`
 
 Create a new future pair for the given type constant.
@@ -115,6 +127,10 @@ the WIT world. They are available as static properties on `wit.Stream` and
 `wit.Future`, and also via the `.types` map for runtime discovery. The numeric
 value is an internal index into the runtime WIT stream/future table; user code
 should pass the generated constant rather than hard-coding the index.
+
+Named aliases for stream and future types are emitted as additional constants
+for the same internal index. For example, `type prompt-stream =
+stream<message>` adds `wit.Stream.PROMPT_STREAM`.
 
 | Constant Pattern | Example | WIT Type |
 |---|---|---|
@@ -154,8 +170,11 @@ Readable endpoint of a component-model stream.
 | Method | Description |
 |---|---|
 | `read(count?)` | Read up to `count` items (default 1). Returns a Promise resolving to an Array (or Uint8Array for `stream<u8>`). |
+| `next()` | Read the next async-iterator value. `stream<u8>` yields bounded `Uint8Array` chunks. |
+| `return()` | End iteration and release the readable handle. |
 | `cancelRead()` | Cancel an in-progress async read. Returns `{ progress, result }` or `undefined` if the cancel itself blocks. |
 | `drop()` | Drop the readable end, releasing the underlying handle. |
+| `[Symbol.asyncIterator]()` | Return this readable as a one-shot async iterator. |
 | `[Symbol.dispose]()` | Alias for `drop()`. |
 
 ### `StreamWritable`
@@ -165,7 +184,9 @@ Writable endpoint of a component-model stream.
 | Method | Description |
 |---|---|
 | `write(data)` | Write a single item or array of items. Returns a Promise resolving to the number of items written. |
+| `writeOne(value)` | Write exactly one item, including list and tuple values represented by JavaScript arrays. |
 | `writeAll(buffer)` | Write all items from buffer, calling `write` repeatedly. Returns a Promise resolving to the total count written. |
+| `writeIterableItem(value)` | Write one iterable yield. Matching numeric typed arrays are written as batches; all other values are written as one WIT item. Returns a Promise resolving to whether the complete value was written. |
 | `cancelWrite()` | Cancel an in-progress async write. Returns `{ progress, result }` or `undefined` if the cancel itself blocks. |
 | `drop()` | Drop the writable end, releasing the underlying handle. |
 | `[Symbol.dispose]()` | Alias for `drop()`. |

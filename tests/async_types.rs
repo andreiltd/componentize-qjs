@@ -4,13 +4,15 @@
 mod common;
 
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use common::{TestCase, WasiCtxState};
-use wasmtime::StoreContextMut;
 use wasmtime::component::{
-    Destination, StreamProducer, StreamReader, StreamResult, Val, VecBuffer,
+    Destination, FutureConsumer, FutureReader, Source, StreamConsumer, StreamProducer,
+    StreamReader, StreamResult, Val, VecBuffer,
 };
+use wasmtime::{AsContextMut, StoreContextMut};
 
 #[tokio::test]
 async fn test_async_echo_u32() {
@@ -495,6 +497,92 @@ async fn test_stream_record_type_constant() {
 
     let results = instance.call_async("make-stream", &[], 1).await.unwrap();
     assert_eq!(results.len(), 1);
+}
+
+#[tokio::test]
+async fn test_named_stream_alias_constants() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:stream-alias;
+
+            world stream-alias {
+                type prompt-stream = stream<string>;
+                type response-stream = stream<string>;
+
+                export stream-indexes: func() -> tuple<u32, u32>;
+                export unused-prompt: async func() -> prompt-stream;
+                export unused-response: async func() -> response-stream;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            export function streamIndexes() {
+                return [wit.Stream.PROMPT_STREAM, wit.Stream.RESPONSE_STREAM];
+            }
+
+            export async function unusedPrompt() {
+                throw new Error("not called");
+            }
+
+            export async function unusedResponse() {
+                throw new Error("not called");
+            }
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    let result = instance.call1_async("stream-indexes", &[]).await.unwrap();
+    assert_eq!(result, Val::Tuple(vec![Val::U32(0), Val::U32(1)]));
+}
+
+#[tokio::test]
+async fn test_named_stream_alias_constants_match_metadata_order() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:stream-alias-order;
+
+            interface streams {
+                type bytes = stream<u8>;
+                type texts = stream<string>;
+
+                unused-texts: async func() -> texts;
+                unused-bytes: async func() -> bytes;
+            }
+
+            world stream-alias-order {
+                export streams;
+                export inspect: func() -> tuple<u32, u32>;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            export const streams = {
+                async unusedTexts() {
+                    throw new Error("not called");
+                },
+
+                async unusedBytes() {
+                    throw new Error("not called");
+                },
+            };
+
+            export function inspect() {
+                return [wit.Stream.BYTES, wit.Stream.TEXTS];
+            }
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    let result = instance.call1_async("inspect", &[]).await.unwrap();
+    assert_eq!(result, Val::Tuple(vec![Val::U32(0), Val::U32(1)]));
 }
 
 #[tokio::test]
@@ -1223,6 +1311,274 @@ async fn test_stream_write_plain_array_still_works() {
 }
 
 #[tokio::test]
+async fn test_blocked_stream_write_keeps_lowered_payload_alive() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:stream-write-lifetime;
+
+            world stream-write-lifetime {
+                export make-stream: async func() -> stream<string>;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            export async function makeStream() {
+                const { readable, writable } = wit.Stream();
+                void writable.write("lowered payload remains valid").then(() => writable.drop());
+                return readable;
+            }
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    let values = Arc::new(Mutex::new(Vec::new()));
+    let (inst, store) = instance.parts();
+    let func = inst
+        .get_typed_func::<(), (StreamReader<String>,)>(&mut *store, "make-stream")
+        .unwrap();
+    let (reader,) = func.call_async(&mut *store, ()).await.unwrap();
+    reader
+        .pipe(
+            &mut *store,
+            StringStreamConsumer {
+                values: Arc::clone(&values),
+                expected: 1,
+            },
+        )
+        .unwrap();
+    store
+        .as_context_mut()
+        .run_concurrent(async |_| {
+            while values.lock().unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        &*values.lock().unwrap(),
+        &["lowered payload remains valid".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn test_blocked_future_write_keeps_lowered_payload_alive() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:future-write-lifetime;
+
+            world future-write-lifetime {
+                export make-future: async func() -> future<string>;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            export async function makeFuture() {
+                const { readable, writable } = wit.Future();
+                void writable.write("lowered payload remains valid").then(() => writable.drop());
+                return readable;
+            }
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    let value = Arc::new(Mutex::new(None));
+    let (inst, store) = instance.parts();
+    let func = inst
+        .get_typed_func::<(), (FutureReader<String>,)>(&mut *store, "make-future")
+        .unwrap();
+    let (reader,) = func.call_async(&mut *store, ()).await.unwrap();
+    reader
+        .pipe(
+            &mut *store,
+            StringFutureConsumer {
+                value: Arc::clone(&value),
+            },
+        )
+        .unwrap();
+    store
+        .as_context_mut()
+        .run_concurrent(async |_| {
+            while value.lock().unwrap().is_none() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        value.lock().unwrap().as_deref(),
+        Some("lowered payload remains valid")
+    );
+}
+
+#[tokio::test]
+async fn test_stream_async_iterable_round_trip_infers_type() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:stream-iterable;
+
+            world stream-iterable {
+                export transform: async func(input: stream<string>) -> stream<string>;
+                export unused: async func() -> stream<u32>;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            export async function transform(input) {
+                return (async function* () {
+                    for await (const value of input) {
+                        yield value.toUpperCase();
+                    }
+                })();
+            }
+
+            export async function unused() {
+                throw new Error("not called");
+            }
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let (inst, store) = instance.parts();
+    let input =
+        StreamReader::new(&mut *store, StringProducer::new(["hello", "from quickjs"])).unwrap();
+    let func = inst
+        .get_typed_func::<(StreamReader<String>,), (StreamReader<String>,)>(
+            &mut *store,
+            "transform",
+        )
+        .unwrap();
+    let (reader,) = func.call_async(&mut *store, (input,)).await.unwrap();
+    reader
+        .pipe(
+            &mut *store,
+            StringStreamConsumer {
+                values: Arc::clone(&output),
+                expected: 2,
+            },
+        )
+        .unwrap();
+    store
+        .as_context_mut()
+        .run_concurrent(async |_| {
+            while output.lock().unwrap().len() < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        &*output.lock().unwrap(),
+        &["HELLO".to_string(), "FROM QUICKJS".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn test_stream_async_iterable_batches_byte_arrays() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:stream-byte-iterable;
+
+            world stream-byte-iterable {
+                export bytes: async func() -> stream<u8>;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            export async function bytes() {
+                return (async function* () {
+                    yield new Uint8Array([1, 2, 3]);
+                    yield new Uint8Array([4, 5]);
+                })();
+            }
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let (inst, store) = instance.parts();
+    let func = inst
+        .get_typed_func::<(), (StreamReader<u8>,)>(&mut *store, "bytes")
+        .unwrap();
+    let (reader,) = func.call_async(&mut *store, ()).await.unwrap();
+    reader
+        .pipe(
+            &mut *store,
+            ByteStreamConsumer {
+                values: Arc::clone(&output),
+                expected: 5,
+            },
+        )
+        .unwrap();
+    store
+        .as_context_mut()
+        .run_concurrent(async |_| {
+            while output.lock().unwrap().len() < 5 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(&*output.lock().unwrap(), &[1, 2, 3, 4, 5]);
+}
+
+#[tokio::test]
+async fn test_stream_async_iterator_return_cancels_pending_read() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:stream-iterator-return;
+
+            world stream-iterator-return {
+                export cancel: async func(input: stream<string>) -> bool;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            export async function cancel(input) {
+                const next = input.next();
+                const returned = await input.return();
+                const cancelled = await next;
+                return returned.done && cancelled.done;
+            }
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    let (inst, store) = instance.parts();
+    let input = StreamReader::new(&mut *store, StalledStringProducer).unwrap();
+    let func = inst
+        .get_typed_func::<(StreamReader<String>,), (bool,)>(&mut *store, "cancel")
+        .unwrap();
+    let (done,) = func.call_async(&mut *store, (input,)).await.unwrap();
+    assert!(done);
+}
+
+#[tokio::test]
 async fn test_future_create_and_return_u32() {
     let mut instance = TestCase::new()
         .wit(
@@ -1541,6 +1897,136 @@ impl<T: Send + Sync + 'static> StreamProducer<WasiCtxState> for EmptyProducer<T>
         _destination: Destination<'a, Self::Item, Self::Buffer>,
         _finish: bool,
     ) -> Poll<wasmtime::Result<StreamResult>> {
+        Poll::Ready(Ok(StreamResult::Dropped))
+    }
+}
+
+struct StringStreamConsumer {
+    values: Arc<Mutex<Vec<String>>>,
+    expected: usize,
+}
+
+impl StreamConsumer<WasiCtxState> for StringStreamConsumer {
+    type Item = String;
+
+    fn poll_consume(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        mut store: StoreContextMut<'_, WasiCtxState>,
+        mut source: Source<'_, Self::Item>,
+        _finish: bool,
+    ) -> Poll<wasmtime::Result<StreamResult>> {
+        let mut values = Vec::with_capacity(source.remaining(&mut store));
+        source.read(&mut store, &mut values)?;
+        self.values.lock().unwrap().extend(values);
+        let result = if self.values.lock().unwrap().len() >= self.expected {
+            StreamResult::Dropped
+        } else {
+            StreamResult::Completed
+        };
+        Poll::Ready(Ok(result))
+    }
+}
+
+struct ByteStreamConsumer {
+    values: Arc<Mutex<Vec<u8>>>,
+    expected: usize,
+}
+
+impl StreamConsumer<WasiCtxState> for ByteStreamConsumer {
+    type Item = u8;
+
+    fn poll_consume(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        mut store: StoreContextMut<'_, WasiCtxState>,
+        mut source: Source<'_, Self::Item>,
+        _finish: bool,
+    ) -> Poll<wasmtime::Result<StreamResult>> {
+        let mut values = Vec::with_capacity(source.remaining(&mut store));
+        source.read(&mut store, &mut values)?;
+        self.values.lock().unwrap().extend(values);
+        let result = if self.values.lock().unwrap().len() >= self.expected {
+            StreamResult::Dropped
+        } else {
+            StreamResult::Completed
+        };
+        Poll::Ready(Ok(result))
+    }
+}
+
+struct StringFutureConsumer {
+    value: Arc<Mutex<Option<String>>>,
+}
+
+impl FutureConsumer<WasiCtxState> for StringFutureConsumer {
+    type Item = String;
+
+    fn poll_consume(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        mut store: StoreContextMut<'_, WasiCtxState>,
+        mut source: Source<'_, Self::Item>,
+        _finish: bool,
+    ) -> Poll<wasmtime::Result<()>> {
+        let mut values = Vec::with_capacity(1);
+        source.read(&mut store, &mut values)?;
+        *self.value.lock().unwrap() = values.pop();
+        Poll::Ready(Ok(()))
+    }
+}
+
+struct StringProducer {
+    values: Option<Vec<String>>,
+}
+
+impl StringProducer {
+    fn new<I, S>(values: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            values: Some(values.into_iter().map(Into::into).collect()),
+        }
+    }
+}
+
+struct StalledStringProducer;
+
+impl StreamProducer<WasiCtxState> for StalledStringProducer {
+    type Item = String;
+    type Buffer = VecBuffer<String>;
+
+    fn poll_produce<'a>(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        _store: StoreContextMut<'a, WasiCtxState>,
+        _destination: Destination<'a, Self::Item, Self::Buffer>,
+        finish: bool,
+    ) -> Poll<wasmtime::Result<StreamResult>> {
+        if finish {
+            Poll::Ready(Ok(StreamResult::Dropped))
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
+impl StreamProducer<WasiCtxState> for StringProducer {
+    type Item = String;
+    type Buffer = VecBuffer<String>;
+
+    fn poll_produce<'a>(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        _store: StoreContextMut<'a, WasiCtxState>,
+        mut destination: Destination<'a, Self::Item, Self::Buffer>,
+        _finish: bool,
+    ) -> Poll<wasmtime::Result<StreamResult>> {
+        if let Some(values) = self.values.take() {
+            destination.set_buffer(VecBuffer::from(values));
+        }
         Poll::Ready(Ok(StreamResult::Dropped))
     }
 }
