@@ -25,6 +25,7 @@ pub(crate) enum Pending {
     },
     /// A stream write that blocked.
     StreamWrite {
+        call: QjsCallContext,
         resolve: Persistent<Value<'static>>,
         wrapper: Persistent<Value<'static>>,
         buffer: BufferGuard,
@@ -33,11 +34,14 @@ pub(crate) enum Pending {
     StreamRead {
         call: QjsCallContext,
         buffer: BufferGuard,
+        iterator: bool,
+        iterator_return: Option<Persistent<Value<'static>>>,
         resolve: Persistent<Value<'static>>,
         wrapper: Persistent<Value<'static>>,
     },
     /// A future write that blocked.
     FutureWrite {
+        call: QjsCallContext,
         resolve: Persistent<Value<'static>>,
         wrapper: Persistent<Value<'static>>,
         buffer: BufferGuard,
@@ -76,6 +80,16 @@ impl TaskInner {
             .expect("no pending entry for handle")
     }
 
+    fn unjoin(&mut self, handle: u32) {
+        assert!(self.pending.contains_key(&handle));
+        unsafe { waitable_join(handle, 0) };
+    }
+
+    fn rejoin(&mut self, handle: u32) {
+        assert!(self.pending.contains_key(&handle));
+        unsafe { waitable_join(handle, self.waitable_set.unwrap()) };
+    }
+
     fn cancel(&mut self) {
         for &handle in self.pending.keys() {
             unsafe { waitable_join(handle, 0) };
@@ -94,6 +108,10 @@ pub(crate) struct TaskState(RefCell<Option<TaskInner>>);
 impl TaskState {
     pub(crate) const fn new() -> Self {
         Self(RefCell::new(None))
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        self.0.borrow().is_some()
     }
 
     fn with<R>(&self, f: impl FnOnce(&mut TaskInner) -> R) -> R {
@@ -125,6 +143,33 @@ impl TaskState {
     /// Unjoin a handle and remove its pending operation.
     pub(crate) fn take(&self, handle: u32) -> Pending {
         self.with(|inner| inner.take(handle))
+    }
+
+    pub(crate) fn unjoin(&self, handle: u32) {
+        self.with(|inner| inner.unjoin(handle));
+    }
+
+    pub(crate) fn rejoin(&self, handle: u32) {
+        self.with(|inner| inner.rejoin(handle));
+    }
+
+    pub(crate) fn set_stream_iterator_return(
+        &self,
+        handle: u32,
+        resolve: Persistent<Value<'static>>,
+    ) {
+        self.with(|inner| {
+            let Some(Pending::StreamRead {
+                iterator_return, ..
+            }) = inner.pending.get_mut(&handle)
+            else {
+                panic!("no pending stream read for handle");
+            };
+            assert!(
+                iterator_return.replace(resolve).is_none(),
+                "stream iterator return already pending"
+            );
+        });
     }
 
     /// Drive the quickjs job queue until drained, then decide whether to

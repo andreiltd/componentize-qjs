@@ -233,6 +233,7 @@ fn future_write<'js>(
     if is_blocked_raw(code) {
         this.0.borrow_mut().end.mark_blocked();
         let pending = Pending::FutureWrite {
+            call,
             buffer,
             resolve: Persistent::save(&ctx, resolve.into_value()),
             wrapper: Persistent::save(&ctx, this.0.into_inner().into_value()),
@@ -291,7 +292,10 @@ pub(crate) fn handle_write_event(handle: u32, result: u32) {
     let pending = with_ctx(|ctx| ctx.task().take(handle));
 
     let Pending::FutureWrite {
-        resolve, wrapper, ..
+        call: _call,
+        resolve,
+        wrapper,
+        ..
     } = pending
     else {
         unreachable!("expected FutureWrite pending");

@@ -108,9 +108,9 @@ pub async fn componentize(opts: &ComponentizeOpts<'_>) -> Result<Vec<u8>> {
     let (pkg_id, _) = resolve.push_path(opts.wit_path)?;
     let world_id = resolve.select_world(&[pkg_id], opts.world_name)?;
 
-    let shim = codegen::generate_shim(&resolve, world_id);
     let resolver = module_resolution(opts)?;
-    let mut wit_dylib = wit_dylib::create(&resolve, world_id, None);
+    let (mut wit_dylib, wit_metadata) = wit_dylib::create_with_metadata(&resolve, world_id, None);
+    let shim = codegen::generate_shim(&resolve, &wit_metadata);
 
     wit_component::embed_component_metadata(
         &mut wit_dylib,

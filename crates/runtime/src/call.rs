@@ -7,7 +7,7 @@ use crate::trivia::fn_lookup;
 use crate::{BorrowedResource, QjsCallContext, with_ctx};
 
 use rquickjs::class::Class;
-use rquickjs::{Coerced, IntoJs, Persistent, Value};
+use rquickjs::{Coerced, IntoJs, Persistent, Symbol, Value};
 use smallvec::SmallVec;
 use wit_dylib_ffi::{
     Call, Enum, Flags, Future, List, Record, Resource, Stream, Tuple, Type, Variant, WitOption,
@@ -378,23 +378,52 @@ impl Call for QjsCallContext {
     fn pop_future(&mut self, _ty: Future) -> u32 {
         pop_with(self, |v| {
             if let Ok(class) = Class::<FutureReadable>::from_value(&v) {
-                return class.borrow().end.handle.expect("future already dropped");
+                return class
+                    .borrow_mut()
+                    .end
+                    .handle
+                    .take()
+                    .expect("future already transferred");
             }
             if let Ok(class) = Class::<FutureWritable>::from_value(&v) {
-                return class.borrow().end.handle.expect("future already dropped");
+                return class
+                    .borrow_mut()
+                    .end
+                    .handle
+                    .take()
+                    .expect("future already transferred");
             }
             v.get().expect("expected future handle")
         })
     }
 
-    fn pop_stream(&mut self, _ty: Stream) -> u32 {
-        pop_with(self, |v| {
+    fn pop_stream(&mut self, ty: Stream) -> u32 {
+        let persistent = self.pop_persistent();
+        with_ctx(|ctx| {
+            let v = persistent.restore(ctx).expect("restore stream value");
+
             if let Ok(class) = Class::<StreamReadable>::from_value(&v) {
-                return class.borrow().end.handle.expect("stream already dropped");
+                return class
+                    .borrow_mut()
+                    .end
+                    .handle
+                    .take()
+                    .expect("stream already transferred");
             }
             if let Ok(class) = Class::<StreamWritable>::from_value(&v) {
-                return class.borrow().end.handle.expect("stream already dropped");
+                return class
+                    .borrow_mut()
+                    .end
+                    .handle
+                    .take()
+                    .expect("stream already transferred");
             }
+
+            if is_iterable(ctx, &v) {
+                return crate::streams::lower_iterable(ctx, ty.index() as u32, v)
+                    .expect("lower async iterable to WIT stream");
+            }
+
             v.get().expect("expected stream handle")
         })
     }
@@ -642,27 +671,32 @@ impl Call for QjsCallContext {
 
     fn push_future(&mut self, ty: Future, handle: u32) {
         with_ctx(|ctx| {
-            let type_index =
-                ctx.wit()
-                    .iter_futures()
-                    .position(|f| f.ty() == ty.ty())
-                    .expect("matching future type must exist in WIT") as u32;
-
-            let obj = crate::futures::make_future_readable(ctx, type_index, handle).unwrap();
+            let obj = crate::futures::make_future_readable(ctx, ty.index() as u32, handle).unwrap();
             self.stack.push(Persistent::save(ctx, obj.into_value()));
         });
     }
 
     fn push_stream(&mut self, ty: Stream, handle: u32) {
         with_ctx(|ctx| {
-            let type_index =
-                ctx.wit()
-                    .iter_streams()
-                    .position(|s| s.ty() == ty.ty())
-                    .expect("matching stream type must exist in WIT") as u32;
-
-            let obj = crate::streams::make_stream_readable(ctx, type_index, handle).unwrap();
+            let obj = crate::streams::make_stream_readable(ctx, ty.index() as u32, handle).unwrap();
             self.stack.push(Persistent::save(ctx, obj.into_value()));
         });
     }
+}
+
+fn is_iterable<'js>(ctx: &rquickjs::Ctx<'js>, value: &Value<'js>) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+
+    [
+        Symbol::async_iterator(ctx.clone()),
+        Symbol::iterator(ctx.clone()),
+    ]
+    .into_iter()
+    .any(|symbol| {
+        object
+            .get::<_, Value>(symbol.as_atom())
+            .is_ok_and(|value| value.is_function())
+    })
 }
