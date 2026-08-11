@@ -55,7 +55,7 @@ jobs:
           targets: wasm32-wasip2
 
       - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@ead08b90bd7b2e6d81963fb9cf0b7239f66d5db4 # v1.21.0
+        uses: cargo-bins/cargo-binstall@e00d2c94cc0067b77737821097a62d91c0301baa # v1.21.1
 
       - name: Compute runtime version
         id: version
@@ -153,13 +153,13 @@ jobs:
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@ead08b90bd7b2e6d81963fb9cf0b7239f66d5db4 # v1.21.0
+        uses: cargo-bins/cargo-binstall@e00d2c94cc0067b77737821097a62d91c0301baa # v1.21.1
 
       - name: Install wkg
         run: cargo binstall wkg --force
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@06fb636fac595d6fb4b28a5dfcb21a6f5091859c # v4.5.0
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
