@@ -37,8 +37,8 @@ bytes = "1"
 oxc_resolver = "11.21.0"
 tokio.workspace = true
 wit-parser.workspace = true
-wit-component = { version = "0.254", features = ["dummy-module"] }
-wit-dylib = "0.254"
+wit-component = { version = "0.256", features = ["dummy-module"] }
+wit-dylib = "0.256"
 wasi-preview1-component-adapter-provider = "47"
 wasmtime.workspace = true
 wasmtime-wasi.workspace = true
