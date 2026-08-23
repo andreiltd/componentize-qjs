@@ -95,7 +95,7 @@ impl Interpreter for QjsInterpreter {
             FuncKind::Method { method, .. } => {
                 assert!(!method.is_empty(), "invalid method name: {}", func.name());
                 let method_name = fn_lookup(ctx, method);
-                let self_val = cx.pop_value(ctx);
+                let self_val = cx.shift_value(ctx);
                 let self_obj = self_val
                     .as_object()
                     .unwrap_or_else(|| panic!("method receiver is not an object"));

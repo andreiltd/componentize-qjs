@@ -1711,9 +1711,16 @@ fn test_exported_resource() {
         package test:res;
 
         interface counter-api {
+            variant update {
+                add(u32),
+                reset,
+            }
+
             resource counter {
                 constructor(initial: u32);
                 increment: func();
+                add: func(value: u32);
+                apply: func(update: update);
                 get-value: func() -> u32;
             }
         }
@@ -1731,6 +1738,11 @@ fn test_exported_resource() {
             class Counter {
                 constructor(initial) { this.value = initial; }
                 increment() { this.value++; }
+                add(value) { this.value += value; }
+                apply(update) {
+                    if (update.tag === "add") this.value += update.val;
+                    if (update.tag === "reset") this.value = 0;
+                }
                 getValue() { return this.value; }
             }
             export const counterApi = { Counter };
@@ -1815,6 +1827,36 @@ fn test_exported_resource() {
         Val::U32(43),
         "value should be 43 after increment"
     );
+
+    // Resource receiver is the first lowered argument; scalar and variant
+    // parameters follow it and must remain regular JavaScript arguments.
+    let add_idx = instance
+        .get_export_index(&mut store, Some(&iface_idx), "[method]counter.add")
+        .expect("[method]counter.add not found");
+    let add = instance.get_func(&mut store, add_idx).unwrap();
+    add.call(&mut store, &[counter.clone(), Val::U32(2)], &mut [])
+        .unwrap();
+
+    let apply_idx = instance
+        .get_export_index(&mut store, Some(&iface_idx), "[method]counter.apply")
+        .expect("[method]counter.apply not found");
+    let apply = instance.get_func(&mut store, apply_idx).unwrap();
+    apply
+        .call(
+            &mut store,
+            &[
+                counter.clone(),
+                Val::Variant("add".into(), Some(Box::new(Val::U32(3)))),
+            ],
+            &mut [],
+        )
+        .unwrap();
+
+    let mut results = [Val::Bool(false)];
+    get_val
+        .call(&mut store, std::slice::from_ref(&counter), &mut results)
+        .unwrap();
+    assert_eq!(results[0], Val::U32(48));
 }
 
 #[test]
