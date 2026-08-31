@@ -12,7 +12,7 @@ use crate::futures::{make_future, register_future_classes};
 use crate::result::ResultBoundary;
 use crate::streams::{make_stream, register_stream_classes};
 use crate::task::Pending;
-use crate::trivia::iface_lookup;
+use crate::trivia::{fn_lookup, iface_lookup};
 use crate::wit_imports::{FuncKind, WitInterface, classify, find_resource};
 use crate::{DetHashSet, DetIndexMap, QjsCallContext, coerce_fn};
 
@@ -243,8 +243,8 @@ fn call_import<'js>(
 
 /// Build the `asyncExports` object for the `__cqjs` namespace.
 ///
-/// Each wrapper calls the user's export function, then chains `.then()` to
-/// signal `task_return` back to the host.
+/// Each wrapper calls the user's export function or resource member, then
+/// chains `.then()` to signal `task_return` back to the host.
 fn build_async_exports<'js>(
     ctx: &rquickjs::Ctx<'js>,
     wit_def: Wit,
@@ -255,29 +255,71 @@ fn build_async_exports<'js>(
     let mut iface_objs: DetIndexMap<String, rquickjs::Object<'_>> = DetIndexMap::default();
 
     for (func_index, func) in wit_def.iter_export_funcs().enumerate() {
-        let func_name = func.name().to_lower_camel_case();
+        let wrapper_name = func.name().to_lower_camel_case();
+        let func_name = func.name();
+        let kind = classify(func_name);
         let iface_name = func
             .interface()
             .map(|interface| iface_lookup(ctx, interface).to_string());
 
-        let fn_name = func_name.clone();
         let iface = iface_name.clone();
 
         let wrapper = Function::new(
             ctx.clone(),
             coerce_fn(move |ctx: Ctx<'_>, args: Rest<Value<'_>>| {
                 let exports = ctx.user_module().exports(&ctx)?;
-
-                let user_fn: Function = if let Some(ref iface) = iface {
-                    let iface_obj: rquickjs::Object = exports.get(iface.as_str())?;
-                    iface_obj.get(fn_name.as_str())?
-                } else {
-                    exports.get(fn_name.as_str())?
+                let export_scope = || {
+                    if let Some(ref iface) = iface {
+                        exports.get(iface.as_str())
+                    } else {
+                        Ok(exports.clone())
+                    }
                 };
 
-                let mut js_args = function::Args::new(ctx.clone(), args.0.len());
-                for arg in args.0 {
+                let mut values = args.0;
+                let (user_fn, this): (Function<'_>, Option<Value<'_>>) = match kind {
+                    FuncKind::Freestanding => {
+                        let scope: Object = export_scope()?;
+                        (scope.get(fn_lookup(&ctx, func_name))?, None)
+                    }
+                    FuncKind::Constructor { .. } => {
+                        return Err(rquickjs::Exception::throw_type(
+                            &ctx,
+                            "resource constructors cannot be async",
+                        ));
+                    }
+                    FuncKind::Method { method, .. } => {
+                        if values.is_empty() {
+                            return Err(rquickjs::Exception::throw_type(
+                                &ctx,
+                                "async resource method receiver is missing",
+                            ));
+                        }
+                        let receiver = values.remove(0);
+                        let receiver_obj = receiver.as_object().ok_or_else(|| {
+                            rquickjs::Exception::throw_type(
+                                &ctx,
+                                "async resource method receiver is not an object",
+                            )
+                        })?;
+                        let method: Function = receiver_obj.get(fn_lookup(&ctx, method))?;
+                        (method, Some(receiver))
+                    }
+                    FuncKind::Static { resource, method } => {
+                        let scope: Object = export_scope()?;
+                        let class_name = resource.to_upper_camel_case();
+                        let class: Object = scope.get(class_name.as_str())?;
+                        let method: Function = class.get(fn_lookup(&ctx, method))?;
+                        (method, Some(class.into_value()))
+                    }
+                };
+
+                let mut js_args = function::Args::new(ctx.clone(), values.len());
+                for arg in values {
                     js_args.push_arg(arg)?;
+                }
+                if let Some(this) = this {
+                    js_args.this(this)?;
                 }
                 let result = user_fn.call_arg::<Value>(js_args)?;
 
@@ -350,7 +392,7 @@ fn build_async_exports<'js>(
                 .or_insert_with(|| rquickjs::Object::new(ctx.clone()).unwrap()),
             None => &exports,
         };
-        target.set(func_name.as_str(), wrapper)?;
+        target.set(wrapper_name.as_str(), wrapper)?;
     }
 
     for (name, obj) in iface_objs {

@@ -121,7 +121,8 @@ impl Interpreter for QjsInterpreter {
                 let js_func: Function = class.get(method_name).unwrap_or_else(|err| {
                     panic!("static method '{method_name}' not found: {err:?}")
                 });
-                let args = cx.stack_into_args(ctx);
+                let mut args = cx.stack_into_args(ctx);
+                args.this(class).expect("failed to set static this");
                 call_export(ctx, func, method_name, js_func, args, cx);
             }
             FuncKind::Freestanding => {

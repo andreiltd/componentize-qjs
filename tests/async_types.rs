@@ -135,6 +135,247 @@ async fn test_async_with_await() {
 }
 
 #[tokio::test]
+async fn test_async_exported_resource_members() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:async-resource;
+
+            interface counter-api {
+                resource counter {
+                    constructor(initial: u32);
+                    add: async func(value: u32) -> u32;
+                    get-value: func() -> u32;
+                    create: static async func(initial: u32) -> counter;
+                    try-fail: async func() -> result<u32, string>;
+                }
+            }
+
+            world async-resource-test {
+                export counter-api;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            class Counter {
+                constructor(initial) {
+                    this.value = initial;
+                }
+
+                async add(value) {
+                    await Promise.resolve();
+                    this.value += value;
+                    return this.value;
+                }
+
+                getValue() {
+                    return this.value;
+                }
+
+                static async create(initial) {
+                    await Promise.resolve();
+                    return new this(initial);
+                }
+
+                async tryFail() {
+                    await Promise.resolve();
+                    throw "expected failure";
+                }
+            }
+
+            export const counterApi = { Counter };
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    let (component, store) = instance.parts();
+    let iface_idx = component
+        .get_export_index(&mut *store, None, "test:async-resource/counter-api")
+        .expect("interface export not found");
+
+    let ctor_idx = component
+        .get_export_index(&mut *store, Some(&iface_idx), "[constructor]counter")
+        .expect("[constructor]counter not found");
+
+    let ctor = component.get_func(&mut *store, ctor_idx).unwrap();
+    let mut results = [Val::Bool(false)];
+
+    ctor.call_async(&mut *store, &[Val::U32(40)], &mut results)
+        .await
+        .unwrap();
+
+    let counter = results[0].clone();
+
+    let add_idx = component
+        .get_export_index(&mut *store, Some(&iface_idx), "[method]counter.add")
+        .expect("[method]counter.add not found");
+
+    let add = component.get_func(&mut *store, add_idx).unwrap();
+    let mut results = [Val::Bool(false)];
+
+    add.call_async(&mut *store, &[counter.clone(), Val::U32(2)], &mut results)
+        .await
+        .unwrap();
+
+    assert_eq!(results[0], Val::U32(42));
+
+    let get_value_idx = component
+        .get_export_index(&mut *store, Some(&iface_idx), "[method]counter.get-value")
+        .expect("[method]counter.get-value not found");
+
+    let get_value = component.get_func(&mut *store, get_value_idx).unwrap();
+    let mut results = [Val::Bool(false)];
+
+    get_value
+        .call_async(&mut *store, std::slice::from_ref(&counter), &mut results)
+        .await
+        .unwrap();
+
+    assert_eq!(results[0], Val::U32(42));
+
+    let create_idx = component
+        .get_export_index(&mut *store, Some(&iface_idx), "[static]counter.create")
+        .expect("[static]counter.create not found");
+
+    let create = component.get_func(&mut *store, create_idx).unwrap();
+    let mut results = [Val::Bool(false)];
+
+    create
+        .call_async(&mut *store, &[Val::U32(7)], &mut results)
+        .await
+        .unwrap();
+    let created = results[0].clone();
+
+    let mut results = [Val::Bool(false)];
+    get_value
+        .call_async(&mut *store, &[created], &mut results)
+        .await
+        .unwrap();
+
+    assert_eq!(results[0], Val::U32(7));
+
+    let try_fail_idx = component
+        .get_export_index(&mut *store, Some(&iface_idx), "[method]counter.try-fail")
+        .expect("[method]counter.try-fail not found");
+
+    let try_fail = component.get_func(&mut *store, try_fail_idx).unwrap();
+    let mut results = [Val::Bool(false)];
+
+    try_fail
+        .call_async(&mut *store, std::slice::from_ref(&counter), &mut results)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        results[0],
+        Val::Result(Err(Some(Box::new(Val::String("expected failure".into())))))
+    );
+}
+
+#[tokio::test]
+async fn test_async_method_only_resource_interface() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:method-only-resource;
+
+            interface types {
+                resource blob {
+                    peek: func() -> u32;
+                    read: async func() -> u32;
+                }
+            }
+
+            interface factory {
+                use types.{blob};
+                make: func(value: u32) -> blob;
+            }
+
+            world method-only-resource {
+                export types;
+                export factory;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            class Blob {
+                constructor(value) {
+                    this.value = value;
+                }
+
+                peek() {
+                    return this.value;
+                }
+
+                async read() {
+                    await Promise.resolve();
+                    return this.value;
+                }
+            }
+
+            export const factory = {
+                make(value) {
+                    return new Blob(value);
+                },
+            };
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    let (component, store) = instance.parts();
+    let factory_idx = component
+        .get_export_index(&mut *store, None, "test:method-only-resource/factory")
+        .expect("factory interface export not found");
+
+    let make_idx = component
+        .get_export_index(&mut *store, Some(&factory_idx), "make")
+        .expect("factory.make not found");
+
+    let make = component.get_func(&mut *store, make_idx).unwrap();
+    let mut results = [Val::Bool(false)];
+
+    make.call_async(&mut *store, &[Val::U32(9)], &mut results)
+        .await
+        .unwrap();
+
+    let blob = results[0].clone();
+
+    let types_idx = component
+        .get_export_index(&mut *store, None, "test:method-only-resource/types")
+        .expect("types interface export not found");
+
+    let peek_idx = component
+        .get_export_index(&mut *store, Some(&types_idx), "[method]blob.peek")
+        .expect("[method]blob.peek not found");
+
+    let peek = component.get_func(&mut *store, peek_idx).unwrap();
+    let mut results = [Val::Bool(false)];
+
+    peek.call_async(&mut *store, std::slice::from_ref(&blob), &mut results)
+        .await
+        .unwrap();
+    assert_eq!(results[0], Val::U32(9));
+
+    let read_idx = component
+        .get_export_index(&mut *store, Some(&types_idx), "[method]blob.read")
+        .expect("[method]blob.read not found");
+
+    let read = component.get_func(&mut *store, read_idx).unwrap();
+    let mut results = [Val::Bool(false)];
+
+    read.call_async(&mut *store, &[blob], &mut results)
+        .await
+        .unwrap();
+    assert_eq!(results[0], Val::U32(9));
+}
+
+#[tokio::test]
 async fn test_async_echo_record() {
     let mut instance = TestCase::new()
         .wit(
