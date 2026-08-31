@@ -247,6 +247,36 @@ export async function greet(name) {
 }
 ```
 
+Exported resource methods and static methods may also be async. Implement them
+as `async` members on the exported JavaScript class; resource constructors
+remain synchronous:
+
+```wit
+package example:counter;
+
+interface counter-api {
+    resource counter {
+        constructor(initial: u32);
+        add: async func(value: u32) -> u32;
+        create: static async func(initial: u32) -> counter;
+    }
+}
+
+world counter {
+    export counter-api;
+}
+```
+
+```js
+class Counter {
+    constructor(initial) { this.value = initial; }
+    async add(value) { this.value += value; return this.value; }
+    static async create(initial) { return new this(initial); }
+}
+
+export const counterApi = { Counter };
+```
+
 ### Streams
 
 Streams transfer a sequence of values between components. Lifted WIT streams

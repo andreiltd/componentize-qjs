@@ -1889,7 +1889,7 @@ fn test_static_resource_method_in_interface() {
             class Widget {
                 constructor(name) { this.name = name; }
                 getName() { return this.name; }
-                static createDefault() { return new Widget("default"); }
+                static createDefault() { return new this("default"); }
             }
             export const widgetApi = { Widget };
         "#,
