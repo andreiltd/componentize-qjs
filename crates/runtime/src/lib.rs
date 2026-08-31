@@ -227,6 +227,10 @@ impl QjsCallContext {
         self.pop_persistent().restore(ctx).expect("stack underflow")
     }
 
+    pub(crate) fn shift_value<'js>(&mut self, ctx: &rquickjs::Ctx<'js>) -> Value<'js> {
+        self.stack.remove(0).restore(ctx).expect("stack underflow")
+    }
+
     pub(crate) fn pop_persistent(&mut self) -> Persistent<Value<'static>> {
         self.stack.pop().expect("stack underflow")
     }
