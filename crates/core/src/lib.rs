@@ -136,18 +136,20 @@ pub async fn componentize(opts: &ComponentizeOpts<'_>) -> Result<Vec<u8>> {
         wit_component::StringEncoding::UTF8,
     )?;
 
-    let pre_wizer_component = wit_component::Linker::default()
-        .validate(true)
-        .library(
-            "componentize_qjs_runtime.wasm",
-            runtime_wasm(opts.runtime),
-            false,
-        )?
-        .library("wit-dylib.wasm", &wit_dylib, false)?
-        .adapter(
-            "wasi_snapshot_preview1",
-            WASI_SNAPSHOT_PREVIEW1_REACTOR_ADAPTER,
-        )?
+    let mut linker = wit_component::Linker::default();
+    linker.encoder().validate(true);
+    linker.library(
+        "componentize_qjs_runtime.wasm",
+        runtime_wasm(opts.runtime),
+        false,
+    )?;
+    linker.library("wit-dylib.wasm", &wit_dylib, false)?;
+    linker.encoder().adapter(
+        "wasi_snapshot_preview1",
+        WASI_SNAPSHOT_PREVIEW1_REACTOR_ADAPTER,
+    )?;
+
+    let pre_wizer_component = linker
         .encode()
         .context("failed to link and encode component")?;
 

@@ -103,6 +103,7 @@ pub async fn run(args: Vec<String>) -> Result<()> {
                 top_level: Some(false),
                 ..Default::default()
             }),
+            mangle_properties: None,
             compress: Some(CompressOptions {
                 unused: CompressOptionsUnused::Keep,
                 keep_names: CompressOptionsKeepNames::all_false(),
