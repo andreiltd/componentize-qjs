@@ -17,8 +17,8 @@ componentize-qjs-cli = { path = ".", version = "0.4.3", default-features = false
 anyhow = "1.0"
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", default-features = false, features = ["rt", "macros"] }
-wasmtime = { version = "47", features = ["component-model", "async"] }
-wasmtime-wasi = { version = "47", default-features = false, features = ["p2", "p3"] }
+wasmtime = { version = "48", features = ["component-model", "async"] }
+wasmtime-wasi = { version = "48", default-features = false, features = ["p2", "p3"] }
 wit-parser = "0.258"
 
 [package]
