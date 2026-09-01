@@ -43,8 +43,9 @@ wasi-preview1-component-adapter-provider = "47"
 wasmtime.workspace = true
 wasmtime-wasi.workspace = true
 wasmtime-wizer = { version = "47", features = ["component-model", "wasmtime"] }
-wac-graph = "0.10"
+wasm-compose = { version = "0.258", default-features = false }
 indexmap = "2"
+tempfile = "3"
 
 [build-dependencies]
 anyhow.workspace = true

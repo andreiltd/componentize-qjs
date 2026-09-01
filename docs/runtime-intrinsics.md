@@ -140,6 +140,7 @@ stream<message>` adds `wit.Stream.PROMPT_STREAM`.
 | Results | `RESULT_STRING_U32` | `result<string, u32>` |
 | Tuples | `TUPLE_U32_STRING` | `tuple<u32, string>` |
 | Lists | `LIST_U8` | `list<u8>` |
+| Maps | `MAP_STRING_U32` | `map<string, u32>` |
 | Nested streams/futures | `STREAM_U8`, `FUTURE_STRING` | `stream<u8>`, `future<string>` |
 | Unit | `UNIT` | (no payload) |
 
@@ -268,6 +269,7 @@ represented directly by their values. Resources are exposed as classes.
 | Variants | `{ tag, val }` (string tag) | `{ tag: "case-a", val }` |
 | Flags | `{ name: boolean }` object | `{ flagA: true, flagB: false }` |
 | Records | object, camelCase fields | `{ fieldName: value }` |
+| Maps | `Map` | `new Map([["key", value]])` |
 | Resources | class instance; methods on prototype | `input.blockingRead(n)` |
 
 ### Export Functions

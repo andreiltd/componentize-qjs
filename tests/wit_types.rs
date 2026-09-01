@@ -182,6 +182,77 @@ fn test_list_type() {
 }
 
 #[test]
+fn test_map_type() {
+    TestCase::new()
+        .wit(
+            r#"
+            package test:maps;
+            world map-test {
+                export scale-map: func(values: map<string, u32>) -> map<string, u32>;
+                export sum-map: func(values: map<string, list<u32>>) -> map<string, u32>;
+                export empty-map: func() -> map<string, u32>;
+            }
+        "#,
+        )
+        .script(
+            r#"
+            export function scaleMap(values) {
+                if (!(values instanceof Map)) {
+                    throw new TypeError("expected Map");
+                }
+
+                const result = new Map();
+                for (const [key, value] of values) {
+                    result.set(key.toUpperCase(), value * 2);
+                }
+                return result;
+            }
+
+            export function sumMap(values) {
+                const result = new Map();
+                for (const [key, items] of values) {
+                    result.set(key, items.reduce((sum, item) => sum + item, 0));
+                }
+                return result;
+            }
+
+            export function emptyMap() {
+                return new Map();
+            }
+        "#,
+        )
+        .expect_call(
+            "scale-map",
+            vec![Val::Map(vec![
+                (Val::String("one".into()), Val::U32(2)),
+                (Val::String("three".into()), Val::U32(4)),
+            ])],
+            Val::Map(vec![
+                (Val::String("ONE".into()), Val::U32(4)),
+                (Val::String("THREE".into()), Val::U32(8)),
+            ]),
+        )
+        .expect_call(
+            "sum-map",
+            vec![Val::Map(vec![
+                (
+                    Val::String("values".into()),
+                    Val::List(vec![Val::U32(1), Val::U32(2), Val::U32(3)]),
+                ),
+                (Val::String("empty".into()), Val::List(vec![])),
+            ])],
+            Val::Map(vec![
+                (Val::String("values".into()), Val::U32(6)),
+                (Val::String("empty".into()), Val::U32(0)),
+            ]),
+        )
+        .expect_call("empty-map", vec![], Val::Map(vec![]))
+        .build()
+        .unwrap()
+        .run();
+}
+
+#[test]
 fn test_typed_array_list_return() {
     TestCase::new()
         .wit(

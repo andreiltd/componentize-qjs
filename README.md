@@ -197,6 +197,7 @@ a project root that contains shared files or `node_modules`.
 |----------|---------|---------|
 | `list<T>` | `Array` | `[1, 2, 3]` |
 | `list<u8>` | `Uint8Array` or `Array` | `new Uint8Array([1, 2, 3])` |
+| `map<K, V>` | `Map` | `new Map([["key", value]])` |
 | `tuple<T, U, ...>` | `Array` | `[42, "hello"]` |
 | `option<T>` | `T \| null` (nested: `{ tag: "some"\|"none", val }`) | `null` for none; `option<option<T>>` is wrapped |
 | `result<T, E>` | top-level function result: return `T` or throw `E`; nested result: `{ tag: "ok"\|"err", val?: T\|E }` | `return 42` / `throw "error"` |

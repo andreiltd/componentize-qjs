@@ -9,11 +9,12 @@ use crate::trivia::fn_lookup;
 use crate::{BorrowedResource, QjsCallContext, with_ctx};
 
 use rquickjs::class::Class;
-use rquickjs::{Coerced, IntoJs, Persistent, Symbol, Value};
+use rquickjs::function::This;
+use rquickjs::{Coerced, Constructor, Function, IntoJs, Persistent, Symbol, Value};
 use smallvec::SmallVec;
 use wit_dylib_ffi::{
-    Call, Enum, Flags, Future, List, Record, Resource, Stream, Tuple, Type, Variant, WitOption,
-    WitResult,
+    Call, Enum, Flags, Future, List, Map, Record, Resource, Stream, Tuple, Type, Variant,
+    WitOption, WitResult,
 };
 
 use std::alloc::Layout;
@@ -202,7 +203,7 @@ impl Call for QjsCallContext {
         })
     }
 
-    fn pop_iter_next(&mut self, _ty: List) {
+    fn pop_list_iter_next(&mut self, _ty: List) {
         let index = *self.iter_stack.last().expect("iter_stack underflow");
         let arr_persistent = self.stack.last().expect("stack underflow").clone();
 
@@ -216,8 +217,50 @@ impl Call for QjsCallContext {
         *self.iter_stack.last_mut().unwrap() = index + 1;
     }
 
-    fn pop_iter(&mut self, _ty: List) {
+    fn pop_list_iter(&mut self, _ty: List) {
         self.iter_stack.pop().expect("iter_stack underflow");
+        self.stack.pop().expect("stack underflow");
+    }
+
+    fn pop_map(&mut self, _ty: Map) -> usize {
+        let persistent = self.stack.pop().expect("stack underflow");
+
+        with_ctx(|ctx| {
+            let value = persistent.restore(ctx).unwrap();
+            let map = value.as_object().expect("expected Map");
+            let constructor: Constructor = ctx.globals().get("Map").expect("Map not found");
+            assert!(map.is_instance_of(&constructor), "expected Map");
+
+            let len = map.get("size").expect("expected Map size");
+            let entries: Function = map.get("entries").expect("Map.entries not found");
+            let iterator: Value = entries
+                .call((This(map.clone()),))
+                .expect("failed to create Map iterator");
+            self.stack.push(Persistent::save(ctx, iterator));
+            len
+        })
+    }
+
+    fn pop_map_iter_next(&mut self, _ty: Map) {
+        let persistent = self.stack.last().expect("stack underflow").clone();
+
+        with_ctx(|ctx| {
+            let value = persistent.restore(ctx).unwrap();
+            let iterator = value.as_object().expect("expected Map iterator");
+            let next: Function = iterator.get("next").expect("Map iterator.next not found");
+            let result: rquickjs::Object = next
+                .call((This(iterator.clone()),))
+                .expect("failed to advance Map iterator");
+            let entry: rquickjs::Array = result.get("value").expect("expected Map entry");
+            let key: Value = entry.get(0).expect("expected Map key");
+            let value: Value = entry.get(1).expect("expected Map value");
+
+            self.stack.push(Persistent::save(ctx, value));
+            self.stack.push(Persistent::save(ctx, key));
+        });
+    }
+
+    fn pop_map_iter(&mut self, _ty: Map) {
         self.stack.pop().expect("stack underflow");
     }
 
@@ -506,6 +549,31 @@ impl Call for QjsCallContext {
             let val = elem.restore(ctx).unwrap();
             let len = arr.len();
             arr.set(len, val).unwrap();
+        });
+    }
+
+    fn push_map(&mut self, _ty: Map, _capacity: usize) {
+        with_ctx(|ctx| {
+            let constructor: Constructor = ctx.globals().get("Map").expect("Map not found");
+            let map: Value = constructor.construct(()).expect("failed to create Map");
+            self.stack.push(Persistent::save(ctx, map));
+        });
+    }
+
+    fn map_append(&mut self, _ty: Map) {
+        let value = self.stack.pop().expect("stack underflow");
+        let key = self.stack.pop().expect("stack underflow");
+        let map_persistent = self.stack.last().expect("stack underflow").clone();
+
+        with_ctx(|ctx| {
+            let map_value = map_persistent.restore(ctx).unwrap();
+            let map = map_value.as_object().expect("expected Map");
+            let set: Function = map.get("set").expect("Map.set not found");
+            let key = key.restore(ctx).unwrap();
+            let value = value.restore(ctx).unwrap();
+            let _: Value = set
+                .call((This(map.clone()), key, value))
+                .expect("failed to append Map entry");
         });
     }
 
