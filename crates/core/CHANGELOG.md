@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4](https://github.com/andreiltd/componentize-qjs/compare/componentize-qjs-v0.4.3...componentize-qjs-v0.4.4) - 2026-09-01
+
+### Bug Fixes
+
+- *(deps)* update rust dependencies ([#79](https://github.com/andreiltd/componentize-qjs/pull/79))
+- *(deps)* update rust dependencies ([#73](https://github.com/andreiltd/componentize-qjs/pull/73))
+
+### Features
+
+- support async exported resource methods ([#77](https://github.com/andreiltd/componentize-qjs/pull/77))
+
 ## [0.4.3](https://github.com/andreiltd/componentize-qjs/compare/componentize-qjs-v0.4.2...componentize-qjs-v0.4.3) - 2026-07-25
 
 ### Bug Fixes
