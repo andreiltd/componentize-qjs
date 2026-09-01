@@ -741,6 +741,34 @@ async fn test_stream_record_type_constant() {
 }
 
 #[tokio::test]
+async fn test_stream_map_type_constant() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:stream-map;
+            world stream-map {
+                export make-stream: async func() -> stream<map<string, u32>>;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            export async function makeStream() {
+                const { readable, writable } = wit.Stream(wit.Stream.MAP_STRING_U32);
+                writable.drop();
+                return readable;
+            }
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    let results = instance.call_async("make-stream", &[], 1).await.unwrap();
+    assert_eq!(results.len(), 1);
+}
+
+#[tokio::test]
 async fn test_named_stream_alias_constants() {
     let mut instance = TestCase::new()
         .wit(

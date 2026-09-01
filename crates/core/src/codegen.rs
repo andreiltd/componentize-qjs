@@ -283,6 +283,11 @@ fn typedef_const_name(resolve: &Resolve, id: TypeId, style: ConstNameStyle) -> S
         TypeDefKind::List(inner) => {
             format!("LIST_{}", type_const_name(resolve, Some(inner), style))
         }
+        TypeDefKind::Map(key, value) => {
+            let key = type_const_name(resolve, Some(key), style);
+            let value = type_const_name(resolve, Some(value), style);
+            format!("MAP_{key}_{value}")
+        }
         TypeDefKind::Future(inner) => {
             let inner = inner
                 .as_ref()

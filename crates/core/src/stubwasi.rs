@@ -5,11 +5,11 @@
 //! 2. Create a "stub world" where the WASI imports become exports
 //! 3. Use `dummy_module` to generate a core module with trap implementations
 //! 4. Encode it as a stub component
-//! 5. Use `wac-graph` to compose the stub into the original component
+//! 5. Use `wasm-compose` to compose the stub into the original component
 
 use anyhow::{Context, Result, bail};
 use indexmap::IndexMap;
-use wac_graph::{CompositionGraph, EncodeOptions, plug, types::Package};
+use wasm_compose::{composer::ComponentComposer, config::Config as ComposeConfig};
 use wit_component::{ComponentEncoder, StringEncoding, dummy_module, embed_component_metadata};
 use wit_parser::decoding::{DecodedWasm, decode};
 use wit_parser::{Docs, ManglingAndAbi, Resolve, Stability, World, WorldItem, WorldKey};
@@ -47,22 +47,22 @@ fn stub_imports(component: &[u8], should_stub: impl Fn(&str) -> bool) -> Result<
     let stub_component =
         make_stub_component(&resolve, world, &imports).context("failed to build stub component")?;
 
-    let mut graph = CompositionGraph::new();
+    let dir = tempfile::tempdir().context("failed to create composition directory")?;
+    let component_path = dir.path().join("original.wasm");
+    let stub_path = dir.path().join("stubs.wasm");
 
-    let orig_pkg = Package::from_bytes("original", None, component.to_vec(), graph.types_mut())
-        .context("failed to register original component")?;
+    std::fs::write(&component_path, component).context("failed to stage original component")?;
+    std::fs::write(&stub_path, stub_component).context("failed to stage stub component")?;
 
-    let stub_pkg = Package::from_bytes("stubs", None, stub_component, graph.types_mut())
-        .context("failed to register stub component")?;
+    let config = ComposeConfig {
+        dir: dir.path().to_path_buf(),
+        definitions: vec!["stubs.wasm".into()],
+        ..Default::default()
+    };
 
-    let orig_id = graph.register_package(orig_pkg)?;
-    let stub_id = graph.register_package(stub_pkg)?;
-
-    plug(&mut graph, vec![stub_id], orig_id)?;
-
-    graph
-        .encode(EncodeOptions::default())
-        .context("failed to encode composed component")
+    ComponentComposer::new(&component_path, &config)
+        .compose()
+        .context("failed to compose stub component")
 }
 
 /// Build a component that exports trap implementations for the given imports.
