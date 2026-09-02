@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4](https://github.com/andreiltd/componentize-qjs/compare/v0.4.3...v0.4.4) - 2026-09-01
+
+### Bug Fixes
+
+- *(deps)* update rust dependencies ([#79](https://github.com/andreiltd/componentize-qjs/pull/79))
+- support exported resource methods with arguments ([#76](https://github.com/andreiltd/componentize-qjs/pull/76))
+- *(deps)* update rust dependencies ([#73](https://github.com/andreiltd/componentize-qjs/pull/73))
+
+### Features
+
+- support async exported resource methods ([#77](https://github.com/andreiltd/componentize-qjs/pull/77))
+
+### Miscellaneous
+
+- *(deps)* update cargo-bins/cargo-binstall action to v1.22.0 ([#80](https://github.com/andreiltd/componentize-qjs/pull/80))
+- *(deps)* update dependency vitest to v4.1.11 ([#78](https://github.com/andreiltd/componentize-qjs/pull/78))
+- *(deps)* update dependency @napi-rs/cli to v3.8.6 ([#74](https://github.com/andreiltd/componentize-qjs/pull/74))
+- *(deps)* update github ci dependencies ([#72](https://github.com/andreiltd/componentize-qjs/pull/72))
+- *(deps)* update dtolnay/rust-toolchain digest to 4360b52 ([#71](https://github.com/andreiltd/componentize-qjs/pull/71))
+
 ## [0.4.3](https://github.com/andreiltd/componentize-qjs/compare/v0.4.2...v0.4.3) - 2026-07-25
 
 ### Bug Fixes
