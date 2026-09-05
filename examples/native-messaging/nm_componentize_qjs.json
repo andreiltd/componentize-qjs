@@ -1,0 +1,9 @@
+{
+  "name": "nm_componentize_qjs",
+  "description": "componentize-qjs Native Messaging host",
+  "path": "/ABSOLUTE/PATH/TO/native-messaging-componentize-qjs/nm_componentize_qjs.sh",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://<ID>/"
+  ]
+}
