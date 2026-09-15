@@ -1,8 +1,8 @@
 //! `Interpreter` trait implementation for quickjs.
 use crate::CtxExt;
-use crate::abi::{CallbackCode, Event};
+use crate::abi::Event;
 use crate::bindings::register;
-use crate::resources::{ResourceClasses, ResourceTable};
+use crate::resources::{ResourceTable, drain_resource_drops};
 use crate::result::ResultBoundary;
 use crate::task::TaskState;
 use crate::trivia::{fn_lookup, iface_lookup};
@@ -12,7 +12,7 @@ use crate::{abi, futures, streams};
 
 use heck::ToUpperCamelCase;
 use rquickjs::function::{Args, Constructor};
-use rquickjs::{Ctx, Function, JsLifetime, Object, Value};
+use rquickjs::{CatchResultExt, Ctx, Function, JsLifetime, Object, Value};
 use wit_dylib_ffi::{ExportFunction, Interpreter, Resource, Wit};
 
 /// Newtype wrapper for `Wit` so it can be stored as rquickjs userdata.
@@ -64,8 +64,6 @@ impl Interpreter for QjsInterpreter {
                 .expect("Failed to store WIT userdata");
             ctx.store_userdata(ResourceTable::default())
                 .expect("Failed to store ResourceTable userdata");
-            ctx.store_userdata(ResourceClasses::default())
-                .expect("Failed to store ResourceClasses userdata");
             ctx.store_userdata(TaskState::new())
                 .expect("Failed to store TaskState userdata");
             ctx.store_userdata(WitImportRegistry::new(wit))
@@ -75,6 +73,7 @@ impl Interpreter for QjsInterpreter {
     }
 
     fn export_start<'a>(_wit: Wit, _func: ExportFunction) -> Box<Self::CallCx<'a>> {
+        with_ctx(drain_resource_drops);
         Box::new(QjsCallContext::default())
     }
 
@@ -98,7 +97,7 @@ impl Interpreter for QjsInterpreter {
                 let self_val = cx.shift_value(ctx);
                 let self_obj = self_val
                     .as_object()
-                    .unwrap_or_else(|| panic!("method receiver is not an object"));
+                    .expect("method receiver is not an object");
                 let method: Function = self_obj
                     .get(method_name)
                     .unwrap_or_else(|err| panic!("method '{method_name}' not found: {err:?}"));
@@ -135,6 +134,7 @@ impl Interpreter for QjsInterpreter {
                 call_export(ctx, func, func_name, js_func, args, cx);
             }
         });
+        with_ctx(drain_resource_drops);
     }
 
     fn export_async_start(
@@ -143,7 +143,9 @@ impl Interpreter for QjsInterpreter {
         mut cx: Box<Self::CallCx<'static>>,
     ) -> u32 {
         with_ctx(|ctx| {
-            ctx.task().init();
+            drain_resource_drops(ctx);
+            let args = cx.stack_into_args(ctx);
+            ctx.task().init(cx);
 
             let globals = ctx.globals();
 
@@ -164,11 +166,10 @@ impl Interpreter for QjsInterpreter {
                 .get(func_name)
                 .unwrap_or_else(|e| panic!("Failed to get async export '{}': {:?}", func_name, e));
 
-            let args = cx.stack_into_args(ctx);
-
             let _result = js_func
                 .call_arg::<Value>(args)
-                .unwrap_or_else(|e| panic!("Failed to call async '{}': {:?}", func.name(), e));
+                .catch(ctx)
+                .unwrap_or_else(|e| panic!("Failed to call async '{}': {e}", func.name()));
         });
 
         with_ctx(|ctx| ctx.task().poll())
@@ -191,19 +192,27 @@ impl Interpreter for QjsInterpreter {
             Event::StreamRead { handle, result } => streams::handle_read_event(handle, result),
             Event::FutureWrite { handle, result } => futures::handle_write_event(handle, result),
             Event::FutureRead { handle, result } => futures::handle_read_event(handle, result),
-            Event::TaskCancelled => with_ctx(|ctx| ctx.task().cancel()),
+            Event::TaskCancelled => with_ctx(|ctx| {
+                ctx.task()
+                    .cancel(ctx)
+                    .catch(ctx)
+                    .expect("Failed to cancel async task");
+            }),
         }
 
-        if matches!(evt, Event::TaskCancelled) {
-            CallbackCode::Exit.encode(0)
-        } else {
-            with_ctx(|ctx| ctx.task().poll())
-        }
+        with_ctx(|ctx| ctx.task().poll())
+    }
+
+    fn export_finish(mut cx: Box<Self::CallCx<'_>>, _func: ExportFunction) {
+        // Post-return cannot invoke host destructors; queued drops wait for the next entry.
+        cx.complete_transfers(1);
+        drop(cx);
     }
 
     fn resource_dtor(_ty: Resource, handle: usize) {
         with_ctx(|ctx| {
             ctx.resources().remove(handle);
+            drain_resource_drops(ctx);
         });
     }
 }

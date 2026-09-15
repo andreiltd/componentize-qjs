@@ -56,8 +56,8 @@ impl<'js> JsCompletion<'js> {
     pub(crate) fn settle_persistent(
         self,
         ctx: &Ctx<'js>,
-        resolve: Persistent<Value<'static>>,
-        reject: Persistent<Value<'static>>,
+        resolve: Persistent<Function<'static>>,
+        reject: Persistent<Function<'static>>,
     ) {
         match self {
             JsCompletion::Return(result) => {

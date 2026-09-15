@@ -256,7 +256,7 @@ impl ComponentInstance {
 
         let mut results = vec![Val::Bool(false); result_count];
         func.call(&mut self.store, params, &mut results)
-            .unwrap_or_else(|e| panic!("calling `{name}` failed: {e}"));
+            .unwrap_or_else(|e| panic!("calling `{name}` failed: {e:#}"));
 
         results
     }

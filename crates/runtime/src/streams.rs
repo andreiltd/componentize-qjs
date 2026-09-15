@@ -8,53 +8,17 @@ use crate::CtxExt;
 use crate::abi::{CopyEnd, CopyResult, CopyState, is_blocked_raw, unpack_copy_result};
 use crate::buffer::BufferGuard;
 use crate::task::Pending;
+use crate::typed_array::{copy_typed_array_as, typed_array_len_as};
 use crate::{QjsCallContext, resolve_promise, symbol_dispose, with_ctx};
 
 use rquickjs::JsLifetime;
 use rquickjs::class::{Class, JsClass, Trace};
-use rquickjs::function::{self, Rest, This};
+use rquickjs::function::{self, Opt, Rest, This};
 use rquickjs::{Ctx, Function, Object, Persistent, Symbol, Value};
 
 use std::cell::Cell;
 
 const BYTE_ITERATOR_CHUNK_SIZE: usize = 64 * 1024;
-
-macro_rules! copy_typed_array_as {
-    ($obj:expr, $ty:expr, $t:ty) => {{
-        let Some(ta) = $obj.as_typed_array::<$t>() else {
-            return Ok(None);
-        };
-
-        let slice: &[$t] = ta.as_ref();
-        let count = slice.len();
-
-        assert_eq!($ty.abi_payload_size(), std::mem::size_of::<$t>());
-        assert!($ty.abi_payload_align() >= std::mem::align_of::<$t>());
-
-        let byte_len = count
-            .checked_mul(std::mem::size_of::<$t>())
-            .ok_or_else(|| rquickjs::Error::new_from_js("number", "buffer size overflow"))?;
-
-        let buf = BufferGuard::new_zeroed(byte_len, $ty.abi_payload_align());
-        if byte_len > 0 {
-            unsafe {
-                let src = slice.as_ptr() as *const u8;
-                let dst = buf.ptr();
-                std::ptr::copy_nonoverlapping(src, dst, byte_len);
-            }
-        }
-        Some((buf, count))
-    }};
-}
-
-macro_rules! typed_array_len_as {
-    ($obj:expr, $t:ty) => {
-        $obj.as_typed_array::<$t>().map(|array| {
-            let slice: &[$t] = array.as_ref();
-            slice.len()
-        })
-    };
-}
 
 /// Rust side state for the readable end of a component-model stream.
 #[derive(Trace, JsLifetime)]
@@ -169,12 +133,12 @@ pub(crate) fn make_stream_readable<'js>(
 }
 
 /// Create a `[StreamWritable, StreamReadable]` pair.
-pub(crate) fn make_stream<'js>(
-    ctx: Ctx<'js>,
-    args: Rest<Value<'js>>,
-) -> rquickjs::Result<Value<'js>> {
-    let type_index: u32 = args.0[0].get()?;
-    let ty = ctx.wit().stream(type_index as usize);
+pub(crate) fn make_stream<'js>(ctx: Ctx<'js>, type_index: u32) -> rquickjs::Result<Value<'js>> {
+    let ty = ctx
+        .wit()
+        .iter_streams()
+        .nth(type_index as usize)
+        .ok_or_else(|| rquickjs::Exception::throw_range(&ctx, "unknown WIT stream type"))?;
 
     let handles = unsafe { ty.new()() };
     let tx_handle = (handles >> 32) as u32;
@@ -208,19 +172,19 @@ pub(crate) fn lower_iterable<'js>(
     let pair: Object = from.call((iterable, type_index))?;
     let readable: Value = pair.get("readable")?;
     let readable = Class::<StreamReadable>::from_value(&readable)?;
-    let handle = readable
-        .borrow_mut()
-        .end
-        .handle
-        .take()
-        .ok_or_else(|| rquickjs::Error::new_from_js("stream", "already transferred"))?;
+    let handle = readable.borrow_mut().end.begin_transfer(type_index)?;
 
     Ok(handle)
 }
 
-fn typed_array_batch_len<'js>(data: &Value<'js>, ty: &wit_dylib_ffi::Stream) -> Option<usize> {
-    let obj = data.as_object()?;
-    match ty.ty()? {
+fn typed_array_batch_len<'js>(
+    data: &Value<'js>,
+    ty: &wit_dylib_ffi::Stream,
+) -> rquickjs::Result<Option<usize>> {
+    let Some((obj, elem_ty)) = data.as_object().zip(ty.ty()) else {
+        return Ok(None);
+    };
+    match elem_ty {
         wit_dylib_ffi::Type::U8 => typed_array_len_as!(obj, u8),
         wit_dylib_ffi::Type::S8 => typed_array_len_as!(obj, i8),
         wit_dylib_ffi::Type::U16 => typed_array_len_as!(obj, u16),
@@ -231,7 +195,7 @@ fn typed_array_batch_len<'js>(data: &Value<'js>, ty: &wit_dylib_ffi::Stream) -> 
         wit_dylib_ffi::Type::S64 => typed_array_len_as!(obj, i64),
         wit_dylib_ffi::Type::F32 => typed_array_len_as!(obj, f32),
         wit_dylib_ffi::Type::F64 => typed_array_len_as!(obj, f64),
-        _ => None,
+        _ => Ok(None),
     }
 }
 
@@ -248,7 +212,7 @@ fn try_typed_array_to_buffer<'js>(
         return Ok(None);
     };
 
-    let pair = match elem_ty {
+    match elem_ty {
         wit_dylib_ffi::Type::U8 => copy_typed_array_as!(obj, ty, u8),
         wit_dylib_ffi::Type::S8 => copy_typed_array_as!(obj, ty, i8),
         wit_dylib_ffi::Type::U16 => copy_typed_array_as!(obj, ty, u16),
@@ -259,19 +223,16 @@ fn try_typed_array_to_buffer<'js>(
         wit_dylib_ffi::Type::S64 => copy_typed_array_as!(obj, ty, i64),
         wit_dylib_ffi::Type::F32 => copy_typed_array_as!(obj, ty, f32),
         wit_dylib_ffi::Type::F64 => copy_typed_array_as!(obj, ty, f64),
-        _ => return Ok(None),
-    };
-
-    Ok(pair)
+        _ => Ok(None),
+    }
 }
 
 fn stream_read<'js>(
     this: This<Class<'js, StreamReadable>>,
     ctx: Ctx<'js>,
-    args: Rest<Value<'js>>,
+    count: Opt<usize>,
 ) -> rquickjs::Result<Value<'js>> {
-    let count: usize = args.0.first().and_then(|v| v.get().ok()).unwrap_or(1);
-    stream_read_impl(this, ctx, count, false)
+    stream_read_impl(this, ctx, count.0.unwrap_or(1), false)
 }
 
 fn stream_next<'js>(
@@ -308,6 +269,7 @@ fn stream_read_impl<'js>(
     count: usize,
     iterator: bool,
 ) -> rquickjs::Result<Value<'js>> {
+    ctx.task().ensure_active(&ctx)?;
     if count == 0 {
         return Err(rquickjs::Error::new_from_js(
             "number",
@@ -336,7 +298,7 @@ fn stream_read_impl<'js>(
             buffer,
             iterator,
             iterator_return: None,
-            resolve: Persistent::save(&ctx, resolve.into_value()),
+            resolve: Persistent::save(&ctx, resolve),
             wrapper: Persistent::save(&ctx, this.0.into_inner().into_value()),
         };
         ctx.task().register(handle, pending);
@@ -478,7 +440,7 @@ fn stream_iterator_return<'js>(
     ctx.task().unjoin(handle);
     let code = unsafe { ty.cancel_read()(handle) };
     ctx.task()
-        .set_stream_iterator_return(handle, Persistent::save(&ctx, resolve.into_value()));
+        .set_stream_iterator_return(handle, Persistent::save(&ctx, resolve));
 
     if is_blocked_raw(code) {
         ctx.task().rejoin(handle);
@@ -490,7 +452,7 @@ fn stream_iterator_return<'js>(
     Ok(promise.into_value())
 }
 
-fn stream_cancel_read<'js>(
+pub(crate) fn stream_cancel_read<'js>(
     this: This<Class<'js, StreamReadable>>,
     ctx: Ctx<'js>,
 ) -> rquickjs::Result<Value<'js>> {
@@ -519,10 +481,12 @@ fn stream_drop_readable<'js>(
     this: This<Class<'js, StreamReadable>>,
     ctx: Ctx<'js>,
 ) -> rquickjs::Result<()> {
-    let mut w = this.0.borrow_mut();
-
-    if let Some(handle) = w.end.handle.take() {
-        let ty = ctx.wit().stream(w.end.type_index as usize);
+    let (handle, type_index) = {
+        let mut readable = this.0.borrow_mut();
+        (readable.end.begin_drop()?, readable.end.type_index)
+    };
+    if let Some(handle) = handle {
+        let ty = ctx.wit().stream(type_index as usize);
         unsafe { ty.drop_readable()(handle) };
     }
 
@@ -569,7 +533,7 @@ fn stream_write_iterable_item<'js>(
     }
 
     let ty = ctx.wit().stream(type_index as usize);
-    let batch_len = typed_array_batch_len(&data, &ty);
+    let batch_len = typed_array_batch_len(&data, &ty)?;
     let expected = batch_len.unwrap_or(1);
 
     let result = if batch_len.is_some() {
@@ -619,6 +583,7 @@ fn stream_write_impl<'js>(
     data: Value<'js>,
     mode: StreamWriteMode,
 ) -> rquickjs::Result<Value<'js>> {
+    ctx.task().ensure_active(&ctx)?;
     let (handle, type_index) = this.0.borrow().end.begin_op()?;
 
     let (promise, resolve, _reject) = ctx.promise()?;
@@ -646,6 +611,7 @@ fn stream_write_impl<'js>(
 
         for i in 0..count {
             let elem: Value = arr.get(i)?;
+            call.transfer_group = i;
             call.push_value(&ctx, elem);
             unsafe { ty.lower(&mut call, buf.ptr().add(ty.abi_payload_size() * i)) };
         }
@@ -663,7 +629,7 @@ fn stream_write_impl<'js>(
         this.0.borrow_mut().end.mark_blocked();
         let pending = Pending::StreamWrite {
             call,
-            resolve: Persistent::save(&ctx, resolve.into_value()),
+            resolve: Persistent::save(&ctx, resolve),
             wrapper: Persistent::save(&ctx, this.0.into_inner().into_value()),
             buffer,
         };
@@ -671,6 +637,7 @@ fn stream_write_impl<'js>(
     } else {
         drop(buffer);
         let (progress, copy_result) = unpack_copy_result(code).expect("non-blocked");
+        call.complete_transfers(progress as usize);
         let dropped_handle = {
             let mut writable = this.0.borrow_mut();
             writable.end.mark_completed(copy_result);
@@ -811,7 +778,7 @@ fn write_all_step<'js>(
     then_fn.call_arg(then_args)
 }
 
-fn stream_cancel_write<'js>(
+pub(crate) fn stream_cancel_write<'js>(
     this: This<Class<'js, StreamWritable>>,
     ctx: Ctx<'js>,
 ) -> rquickjs::Result<Value<'js>> {
@@ -840,9 +807,12 @@ fn stream_drop_writable<'js>(
     this: This<Class<'js, StreamWritable>>,
     ctx: Ctx<'js>,
 ) -> rquickjs::Result<()> {
-    let mut w = this.0.borrow_mut();
-    if let Some(handle) = w.end.handle.take() {
-        let ty = ctx.wit().stream(w.end.type_index as usize);
+    let (handle, type_index) = {
+        let mut writable = this.0.borrow_mut();
+        (writable.end.begin_drop()?, writable.end.type_index)
+    };
+    if let Some(handle) = handle {
+        let ty = ctx.wit().stream(type_index as usize);
         unsafe { ty.drop_writable()(handle) };
     }
     Ok(())
@@ -853,7 +823,7 @@ pub(crate) fn handle_write_event(handle: u32, result: u32) {
     let pending = with_ctx(|ctx| ctx.task().take(handle));
 
     let Pending::StreamWrite {
-        call: _call,
+        mut call,
         resolve,
         wrapper,
         ..
@@ -864,6 +834,7 @@ pub(crate) fn handle_write_event(handle: u32, result: u32) {
 
     let (progress, copy_result) =
         unpack_copy_result(result).expect("StreamWrite callback should not be BLOCKED");
+    call.complete_transfers(progress as usize);
 
     let result = with_ctx(|ctx| {
         let w = wrapper.restore(ctx).unwrap();

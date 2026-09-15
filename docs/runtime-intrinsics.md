@@ -120,6 +120,13 @@ const { readable, writable } = wit.Future(wit.Future.STRING);
 
 If only one future type exists in the WIT world, `type` may be omitted.
 
+### `wit.Future.from(value, type)`
+
+Adapt a value or Promise to a WIT future. Returns `{ readable, completion }`.
+Use the readable handle when returning a future from an async export; returning
+the payload Promise directly would cause JavaScript to await it before the WIT
+boundary is reached.
+
 ### Type Constants
 
 Type constants are generated for each stream/future element type found in
@@ -195,6 +202,9 @@ Writable endpoint of a component-model stream.
 ### `FutureReadable`
 
 Readable endpoint of a component-model future.
+This object is not a thenable; `await readable.read()` obtains its payload.
+The native class traces its cached read Promise so repeated reads share one
+operation without hiding JavaScript references from the garbage collector.
 
 | Method | Description |
 |---|---|
@@ -202,6 +212,10 @@ Readable endpoint of a component-model future.
 | `cancelRead()` | Cancel an in-progress async read. Returns the `CopyResult` code or `undefined` if the cancel blocks. |
 | `drop()` | Drop the readable end. |
 | `[Symbol.dispose]()` | Alias for `drop()`. |
+
+An immediately completed cancellation settles the original operation just like
+a callback completion. A cancelled read clears the cached Promise, allowing a
+new `read()` to retry. A completed future cannot be written a second time.
 
 ### `FutureWritable`
 
@@ -214,21 +228,78 @@ Writable endpoint of a component-model future.
 | `drop()` | Drop the writable end. |
 | `[Symbol.dispose]()` | Alias for `drop()`. |
 
+All endpoint disposal methods use the well-known `Symbol.dispose`, not
+`Symbol.for("dispose")`. Disposal and ownership transfer reject endpoints with
+an in-progress operation; cancellation must settle first.
+
+### Imported Resources
+
+Imported resource wrappers store their resource type, handle, and ownership
+state in native class data, not JavaScript properties. Their WIT-specific
+prototypes inherit native disposal methods. Owned handles are invalidated on
+transfer or explicit disposal; borrowed wrappers expire at the end of their
+component call.
+
+Outbound loans keep native owner state alive and block disposal or transfer until
+the import completes. Own transfers remain reserved until consumption is known:
+partial writes restore unconsumed resource wrappers, and imports cancelled before
+starting restore their owned arguments. Incoming borrow guards reject scope exit
+while a borrowing import remains outstanding.
+
+The imported-resource registry and deferred-drop queue are initialized with the
+JavaScript context, including for empty WIT worlds with no bindings to initialize.
+
+Garbage-collection finalizers enqueue abandoned owned handles. Host destructors
+run from safe runtime boundaries after QuickJS has left its finalizer, with no
+Rust queue borrow held across a host call. Explicit disposal is preferred when
+prompt cleanup is required.
+
+### Task Cancellation
+
+Cancellation unjoins each pending waitable before invoking its cancellation
+intrinsic. An immediate completion uses the normal completion handler; a
+blocked cancellation rejoins the waitable and retains its conversion context,
+callbacks, and ABI buffer until completion.
+
+Cancelled async imports reject their JavaScript Promises. During task
+cancellation, new asynchronous operations are rejected and export completion
+callbacks do not call `task.return`. The runtime acknowledges `task.cancel`
+only after pending operations and their borrowed arguments have been released.
+
 ---
+
+## rquickjs Integration
+
+The runtime uses rquickjs 0.13. Numeric typed arrays are copied into aligned,
+Rust-owned ABI buffers through `typed_array::TypedArrayExt`. The same module
+contains native-view validation and shared type-specific casting macros.
+`BufferGuard` only handles allocation and ownership; WIT type dispatch remains
+in the call and stream conversion code.
+
+The adapter uses `TypedArray::as_raw()`. The raw view supplies the
+actual view offset and byte length; element counts do not read an overridable
+JavaScript `length` property. No JavaScript executes between obtaining the raw
+view and copying its bytes, and no JS-backed pointer survives the copy. Attached
+empty views are valid; detached or out-of-bounds views report an error.
+
+The custom job helper remains necessary: `Ctx::execute_pending_job()` still
+loses exception status, while `Runtime::execute_pending_job()` would reacquire
+the lock already held by `Context::with()`. `Promise::finish()` uses the same
+lossy context method, so module evaluation retains its explicit job loop.
+Likewise, rquickjs does not yet expose a typed `Symbol.dispose` constructor;
+the runtime retrieves the well-known symbol from the global `Symbol` object.
 
 ## Hidden Object Properties
 
 ### `__cqjs_handle`
 
-A numeric property set on JS objects that wrap imported or exported WIT
-resources. Stores the canonical component-model resource handle (`u32`).
+A numeric property used on exported, JS-backed WIT resources. Stores the
+canonical component-model resource handle (`u32`). Imported resources instead
+use native opaque state and never trust this property.
 
-- Set on: Resource wrapper objects during `push_borrow`, `push_own`, and
-  `exported_resource_to_handle` calls.
-- Read by: `imported_resource_to_handle` and `exported_resource_to_handle`
-  to retrieve the canonical handle.
-- Removed: When an owned resource is lifted back to JS via `push_own`, the
-  property is removed since the handle is no longer valid.
+- Set/read by: `exported_resource_to_handle`.
+- Removed: When an exported owned resource is lifted back to JS via
+  `push_own`, since the handle is no longer valid.
 
 ## WIT Import/Export Naming
 

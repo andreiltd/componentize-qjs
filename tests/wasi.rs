@@ -185,6 +185,46 @@ fn test_wasi_stdio() {
     let result = inst.call1("echo-stdin-to-stdout", &[]);
     assert_eq!(result, Val::Result(Ok(None)));
     assert_eq!(inst.stdout_bytes(), b"hello from stdin");
+    assert!(
+        inst.parts().1.data().table.is_empty(),
+        "stdio resources should be released before post-return"
+    );
+}
+
+#[test]
+fn test_wasi_resources_finalized_during_result_lowering() {
+    let mut inst = TestCase::new()
+        .wit_dir(wasi_wit_dir())
+        .world("wasi-resource-cleanup")
+        .script(
+            r#"
+            import stdin from "wasi:cli/stdin@0.2.12";
+
+            export function makeResult() {
+                return { value: 7, extra: stdin.getStdin() };
+            }
+
+            export function flush() {}
+        "#,
+        )
+        .build()
+        .expect("should build wasi-resource-cleanup component");
+
+    // Each next call must release the discarded resource before opening another stream.
+    inst.parts().1.data_mut().table.set_max_capacity(1);
+
+    for _ in 0..2 {
+        assert_eq!(
+            inst.call1("make-result", &[]),
+            Val::Record(vec![("value".into(), Val::U32(7))])
+        );
+    }
+
+    inst.call("flush", &[], 0);
+    assert!(
+        inst.parts().1.data().table.is_empty(),
+        "resources finalized during result lowering should be released on the next entry"
+    );
 }
 
 #[tokio::test]

@@ -886,16 +886,45 @@ fn test_list_of_strings() {
 
 #[test]
 fn test_empty_world() {
-    TestCase::new()
-        .wit(
-            r#"
-            package test:empty;
-            world empty {}
-        "#,
-        )
-        .script("// empty module\n")
-        .build()
-        .unwrap();
+    for script in ["// empty module\n", "await Promise.resolve();"] {
+        TestCase::new()
+            .wit(
+                r#"
+                package test:empty;
+                world empty {}
+            "#,
+            )
+            .script(script)
+            .build()
+            .unwrap();
+    }
+}
+
+#[test]
+fn test_empty_world_initialization_error() {
+    for script in [
+        "throw new Error('empty-world initialization failed');",
+        "await Promise.reject(new Error('empty-world initialization failed'));",
+    ] {
+        let Err(err) = TestCase::new()
+            .wit(
+                r#"
+                package test:empty;
+                world empty {}
+            "#,
+            )
+            .script(script)
+            .build()
+        else {
+            panic!("module initialization should fail");
+        };
+
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("empty-world initialization failed"),
+            "{message}"
+        );
+    }
 }
 
 #[test]

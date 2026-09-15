@@ -4,7 +4,7 @@ mod wit;
 
 use std::cell::RefCell;
 
-use rquickjs::{CaughtError, JsLifetime, Module, Persistent, Runtime};
+use rquickjs::{CaughtError, CaughtResult, Ctx, JsLifetime, Module, Persistent, Runtime};
 
 use crate::CtxExt;
 
@@ -88,9 +88,46 @@ fn evaluate<'js>(
     let (module, promise) = CaughtError::catch(ctx, module.eval())
         .map_err(|e| format!("Failed to evaluate JavaScript module: {e}"))?;
 
-    CaughtError::catch(ctx, promise.finish::<()>())
-        .map_err(|e| format!("Failed to finish JavaScript module evaluation: {e}"))?;
+    loop {
+        if let Some(result) = promise.result::<()>() {
+            CaughtError::catch(ctx, result)
+                .map_err(|e| format!("Failed to finish JavaScript module evaluation: {e}"))?;
+            break;
+        }
+
+        if !execute_pending_job(ctx).map_err(|e| format!("JavaScript module job failed: {e}"))? {
+            return Err(format!(
+                "Failed to finish JavaScript module evaluation: {}",
+                rquickjs::Error::WouldBlock
+            ));
+        }
+    }
 
     CaughtError::catch(ctx, module.namespace())
         .map_err(|e| format!("Failed to read JavaScript module namespace: {e}"))
+}
+
+/// Execute a job without reacquiring the runtime lock or losing its exception.
+pub(crate) fn execute_pending_job<'js>(ctx: &Ctx<'js>) -> CaughtResult<'js, bool> {
+    let mut job_ctx = std::ptr::null_mut();
+
+    // The caller holds the runtime lock through Context::with. QuickJS returns
+    // the context that owns an exception, which need not be the caller's context.
+    let result = unsafe {
+        let runtime = rquickjs::qjs::JS_GetRuntime(ctx.as_raw().as_ptr());
+        rquickjs::qjs::JS_ExecutePendingJob(runtime, &mut job_ctx)
+    };
+
+    if result < 0 {
+        let ptr = std::ptr::NonNull::new(job_ctx).expect("job exception without a context");
+        // SAFETY: this context belongs to the locked runtime and cannot escape 'js.
+        let job_ctx = unsafe { Ctx::from_raw(ptr) };
+
+        Err(CaughtError::from_error(
+            &job_ctx,
+            rquickjs::Error::Exception,
+        ))
+    } else {
+        Ok(result > 0)
+    }
 }

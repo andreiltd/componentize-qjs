@@ -227,6 +227,15 @@ output.blockingWriteAndFlush(chunk);
 `[static]` methods are exposed on the resource class and `[constructor]` makes
 the class callable with `new`.
 
+Owned imported resources support `[Symbol.dispose]()` for deterministic
+cleanup. Passing one to a WIT `own<T>` parameter transfers ownership and
+invalidates the original wrapper. Borrowed wrappers expire when their component
+call completes and cannot be transferred or disposed as owners. Resources lent
+to an in-flight import remain alive and cannot be disposed or transferred until
+that import completes. Ownership is restored for unconsumed stream/future writes
+and for imported calls cancelled before they start. Await imports using an
+incoming borrowed resource before returning from its export.
+
 ### Async Exports
 
 Async exports are declared with the `async` keyword in WIT and implemented
@@ -405,7 +414,7 @@ world async-value {
 ```
 
 ```js
-async function compute() {
+export async function compute() {
     const { readable, writable } = wit.Future();
 
     // Write the value (fire-and-forget; completes when reader reads)
@@ -417,6 +426,16 @@ async function compute() {
 
 **Future type constants** follow the same pattern: `wit.Future.U32`,
 `wit.Future.STRING`, etc.
+
+Future handles are deliberately not thenable: use `await readable.read()` to
+obtain the payload. This keeps `return readable` in an async export from
+implicitly consuming the future, and preserves nested future handles.
+Repeated `read()` calls share the same Promise; a cancelled read rejects that
+Promise and allows a subsequent read to retry.
+
+`wit.Future.from(value, type)` adapts a value or Promise and returns
+`{ readable, completion }`. Return its `readable` from an async export rather
+than returning the payload Promise directly, which JavaScript would await.
 
 **FutureReadable methods:**
 
@@ -436,16 +455,24 @@ async function compute() {
 
 ### Resource Cleanup
 
-Stream and future handles support
+Owned imported resources, stream endpoints, and future endpoints support
 [Explicit Resource Management](https://github.com/tc39/proposal-explicit-resource-management)
 via `Symbol.dispose`. In environments that support `using`:
 
 ```js
 {
-    using stream = wit.Stream();
-    // stream.writable and stream.readable are auto-dropped when leaving scope
+    const stream = wit.Stream();
+    using writable = stream.writable;
+    using readable = stream.readable;
+    // Each endpoint is disposed when leaving scope.
 }
 ```
+
+The factory's `{ readable, writable }` pair is not itself disposable.
+Complete an endpoint's pending operation (or cancel it and await its
+settlement) before leaving its `using` scope or calling `.drop()`.
+Host-requested task cancellation retains pending ABI buffers until the host
+acknowledges each operation's completion or cancellation.
 
 Otherwise, call `.drop()` explicitly to release handles.
 
