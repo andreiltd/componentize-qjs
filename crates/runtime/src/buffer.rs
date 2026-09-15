@@ -30,7 +30,7 @@ impl BufferGuard {
     fn allocate(size: usize, align: usize, zeroed: bool) -> Self {
         let layout = Layout::from_size_align(size, align).expect("invalid layout");
         let ptr = if size == 0 {
-            std::ptr::NonNull::<u8>::dangling().as_ptr()
+            std::ptr::without_provenance_mut(layout.align())
         } else if zeroed {
             unsafe { std::alloc::alloc_zeroed(layout) }
         } else {
@@ -61,7 +61,7 @@ impl BufferGuard {
     ///
     /// # Safety
     /// The pointer must have been allocated with the given layout or be
-    /// dangling if `layout.size() == 0`.
+    /// non-null and aligned to the layout if `layout.size() == 0`.
     #[allow(dead_code)]
     pub(crate) unsafe fn from_raw(ptr: *mut u8, layout: Layout) -> Self {
         Self { ptr, layout }

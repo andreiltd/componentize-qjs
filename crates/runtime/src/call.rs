@@ -1,16 +1,19 @@
 //! `Call` trait implementation for quickjs to/from wit type conversions.
 use crate::CtxExt;
-use crate::buffer::BufferGuard;
 use crate::futures::{FutureReadable, FutureWritable};
-use crate::resources::{exported_resource_to_handle, imported_resource_to_handle};
+use crate::resources::{
+    borrow_imported_resource, exported_resource_to_handle, make_imported_borrowed,
+    make_imported_owned, transfer_imported_resource,
+};
 use crate::streams::{StreamReadable, StreamWritable};
 use crate::tagged::decode_tagged;
 use crate::trivia::fn_lookup;
-use crate::{BorrowedResource, QjsCallContext, with_ctx};
+use crate::typed_array::try_typed_array_copy;
+use crate::{QjsCallContext, with_ctx};
 
 use rquickjs::class::Class;
 use rquickjs::function::This;
-use rquickjs::{Coerced, Constructor, Function, IntoJs, Persistent, Symbol, Value};
+use rquickjs::{CatchResultExt, Coerced, Constructor, Function, IntoJs, Persistent, Symbol, Value};
 use smallvec::SmallVec;
 use wit_dylib_ffi::{
     Call, Enum, Flags, Future, List, Map, Record, Resource, Stream, Tuple, Type, Variant,
@@ -46,49 +49,6 @@ fn push_with(cx: &mut QjsCallContext, f: impl for<'js> FnOnce(&rquickjs::Ctx<'js
         let v = f(ctx);
         cx.push_value(ctx, v);
     });
-}
-
-/// Assign the imported resource prototype
-fn set_imported_prototype<'js>(
-    ctx: &rquickjs::Ctx<'js>,
-    obj: &rquickjs::Object<'js>,
-    ty: Resource,
-) {
-    let Some(proto) = ctx.resource_classes().prototype(ty.index()) else {
-        return;
-    };
-    let Ok(proto_val) = proto.restore(ctx) else {
-        return;
-    };
-    if let Some(proto_obj) = proto_val.into_object() {
-        let _ = obj.set_prototype(Some(&proto_obj));
-    }
-}
-
-fn copy_typed_array<T>(slice: &[T]) -> (*const u8, usize, Layout) {
-    let count = slice.len();
-    let byte_len = count
-        .checked_mul(std::mem::size_of::<T>())
-        .expect("typed array byte length overflow");
-
-    let buffer = BufferGuard::new_uninit(byte_len, std::mem::align_of::<T>());
-    if byte_len > 0 {
-        unsafe {
-            std::ptr::copy_nonoverlapping(slice.as_ptr().cast::<u8>(), buffer.ptr(), byte_len)
-        };
-    }
-    let (ptr, layout) = buffer.into_raw();
-    (ptr.cast_const(), count, layout)
-}
-
-/// Extract a TypedArray<T> and copy its bytes into a new buffer.
-/// This has to be a macro because TypedArrayItem is not public.
-macro_rules! try_typed_array_copy {
-    ($val:expr, $t:ty) => {
-        $val.as_object()
-            .and_then(|object| object.as_typed_array::<$t>())
-            .map(|array| copy_typed_array::<$t>(array.as_ref()))
-    };
 }
 
 impl Call for QjsCallContext {
@@ -168,7 +128,7 @@ impl Call for QjsCallContext {
 
         let result = with_ctx(|ctx| {
             let val = persistent.restore(ctx).unwrap();
-            match ty.ty() {
+            let result = match ty.ty() {
                 Type::U8 => try_typed_array_copy!(val, u8),
                 Type::S8 => try_typed_array_copy!(val, i8),
                 Type::U16 => try_typed_array_copy!(val, u16),
@@ -179,16 +139,18 @@ impl Call for QjsCallContext {
                 Type::S64 => try_typed_array_copy!(val, i64),
                 Type::F32 => try_typed_array_copy!(val, f32),
                 Type::F64 => try_typed_array_copy!(val, f64),
-                _ => None,
-            }
+                _ => Ok(None),
+            };
+            result.catch(ctx).expect("Failed to copy typed array")
         });
 
-        result.map(|(ptr, count, layout)| {
+        result.map(|(buffer, count)| {
+            let (ptr, layout) = buffer.into_raw();
             if layout.size() > 0 {
-                self.deferred_deallocs.push((ptr as *mut u8, layout));
+                self.deferred_deallocs.push((ptr, layout));
             }
             self.stack.pop();
-            (ptr, count)
+            (ptr.cast_const(), count)
         })
     }
 
@@ -274,7 +236,8 @@ impl Call for QjsCallContext {
                 // Nested option: { tag: "some", val } | { tag: "none" }.
                 let (discriminant, payload) =
                     decode_tagged(ctx, val, "nested option", [("none", false), ("some", true)])
-                        .unwrap_or_else(|err| panic!("invalid nested option: {err}"));
+                        .catch(ctx)
+                        .expect("invalid nested option");
                 if let Some(inner) = payload {
                     self.stack.push(Persistent::save(ctx, inner));
                 }
@@ -298,7 +261,8 @@ impl Call for QjsCallContext {
                 "result",
                 [("ok", ty.ok().is_some()), ("err", ty.err().is_some())],
             )
-            .unwrap_or_else(|err| panic!("invalid result: {err}"));
+            .catch(ctx)
+            .expect("invalid result");
             if let Some(inner) = payload {
                 self.stack.push(Persistent::save(ctx, inner));
             }
@@ -315,7 +279,8 @@ impl Call for QjsCallContext {
                 .map(|(name, payload_ty)| (name, payload_ty.is_some()));
 
             let (discriminant, payload) = decode_tagged(ctx, val, "variant", cases)
-                .unwrap_or_else(|err| panic!("invalid variant: {err}"));
+                .catch(ctx)
+                .expect("invalid variant");
 
             if let Some(inner) = payload {
                 self.stack.push(Persistent::save(ctx, inner));
@@ -347,8 +312,9 @@ impl Call for QjsCallContext {
             for (i, name) in ty.names().enumerate() {
                 let set = obj
                     .get::<_, Coerced<bool>>(fn_lookup(ctx, name))
-                    .map(|c| c.0)
-                    .unwrap_or(false);
+                    .catch(ctx)
+                    .unwrap_or_else(|err| panic!("Failed to read flag '{name}': {err}"))
+                    .0;
                 if set {
                     bits |= 1 << i;
                 }
@@ -364,7 +330,11 @@ impl Call for QjsCallContext {
             if ty.new().is_some() {
                 exported_resource_to_handle(ctx, ty, &val)
             } else {
-                imported_resource_to_handle(&val)
+                let (handle, loan) = borrow_imported_resource(ty, &val)
+                    .catch(ctx)
+                    .expect("Failed to borrow imported resource");
+                self.loans.push(loan);
+                handle
             }
         })
     }
@@ -376,7 +346,11 @@ impl Call for QjsCallContext {
             if ty.new().is_some() {
                 exported_resource_to_handle(ctx, ty, &val)
             } else {
-                imported_resource_to_handle(&val)
+                let (handle, transfer) = transfer_imported_resource(ty, &val)
+                    .catch(ctx)
+                    .expect("Failed to transfer imported resource");
+                self.transfers.push((self.transfer_group, transfer));
+                handle
             }
         })
     }
@@ -405,23 +379,33 @@ impl Call for QjsCallContext {
         });
     }
 
-    fn pop_future(&mut self, _ty: Future) -> u32 {
+    fn pop_future(&mut self, ty: Future) -> u32 {
         pop_with(self, |v| {
             if let Ok(class) = Class::<FutureReadable>::from_value(&v) {
                 return class
                     .borrow_mut()
                     .end
-                    .handle
-                    .take()
-                    .expect("future already transferred");
+                    .begin_transfer(ty.index() as u32)
+                    .expect("future cannot be transferred");
             }
+
             if let Ok(class) = Class::<FutureWritable>::from_value(&v) {
                 return class
                     .borrow_mut()
                     .end
-                    .handle
-                    .take()
-                    .expect("future already transferred");
+                    .begin_transfer(ty.index() as u32)
+                    .expect("future cannot be transferred");
+            }
+
+            let ctx = v.ctx().clone();
+
+            if is_thenable(&v)
+                .catch(&ctx)
+                .expect("Failed to inspect future value")
+            {
+                return crate::futures::lower_thenable(&ctx, ty.index() as u32, v)
+                    .catch(&ctx)
+                    .expect("Failed to lower WIT future");
             }
             v.get().expect("expected future handle")
         })
@@ -436,22 +420,24 @@ impl Call for QjsCallContext {
                 return class
                     .borrow_mut()
                     .end
-                    .handle
-                    .take()
-                    .expect("stream already transferred");
+                    .begin_transfer(ty.index() as u32)
+                    .expect("stream cannot be transferred");
             }
             if let Ok(class) = Class::<StreamWritable>::from_value(&v) {
                 return class
                     .borrow_mut()
                     .end
-                    .handle
-                    .take()
-                    .expect("stream already transferred");
+                    .begin_transfer(ty.index() as u32)
+                    .expect("stream cannot be transferred");
             }
 
-            if is_iterable(ctx, &v) {
+            if is_iterable(ctx, &v)
+                .catch(ctx)
+                .expect("Failed to inspect stream value")
+            {
                 return crate::streams::lower_iterable(ctx, ty.index() as u32, v)
-                    .expect("lower async iterable to WIT stream");
+                    .catch(ctx)
+                    .expect("Failed to lower WIT stream");
             }
 
             v.get().expect("expected stream handle")
@@ -660,15 +646,11 @@ impl Call for QjsCallContext {
                 let rep = handle as usize;
                 ctx.resources().get(rep).restore(ctx).unwrap()
             } else {
-                self.borrows.push(BorrowedResource {
-                    handle,
-                    drop_fn: ty.drop(),
-                });
-
-                let obj = rquickjs::Object::new(ctx.clone()).unwrap();
-                obj.set("__cqjs_handle", handle).unwrap();
-                set_imported_prototype(ctx, &obj, ty);
-                obj.into_value()
+                let (val, borrow) = make_imported_borrowed(ctx, ty, handle)
+                    .catch(ctx)
+                    .expect("Failed to wrap borrowed imported resource");
+                self.borrows.push(borrow);
+                val
             };
             self.push_value(ctx, val);
         });
@@ -684,10 +666,9 @@ impl Call for QjsCallContext {
                 }
                 val
             } else {
-                let obj = rquickjs::Object::new(ctx.clone()).unwrap();
-                obj.set("__cqjs_handle", handle).unwrap();
-                set_imported_prototype(ctx, &obj, ty);
-                obj.into_value()
+                make_imported_owned(ctx, ty, handle)
+                    .catch(ctx)
+                    .expect("Failed to wrap owned imported resource")
             };
             self.push_value(ctx, val);
         });
@@ -739,19 +720,25 @@ impl Call for QjsCallContext {
     }
 }
 
-fn is_iterable<'js>(ctx: &rquickjs::Ctx<'js>, value: &Value<'js>) -> bool {
+fn is_iterable<'js>(ctx: &rquickjs::Ctx<'js>, value: &Value<'js>) -> rquickjs::Result<bool> {
     let Some(object) = value.as_object() else {
-        return false;
+        return Ok(false);
     };
 
-    [
+    for symbol in [
         Symbol::async_iterator(ctx.clone()),
         Symbol::iterator(ctx.clone()),
-    ]
-    .into_iter()
-    .any(|symbol| {
-        object
-            .get::<_, Value>(symbol.as_atom())
-            .is_ok_and(|value| value.is_function())
-    })
+    ] {
+        if object.get::<_, Value>(symbol.as_atom())?.is_function() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn is_thenable(value: &Value<'_>) -> rquickjs::Result<bool> {
+    let Some(object) = value.as_object() else {
+        return Ok(false);
+    };
+    Ok(object.get::<_, Value>("then")?.is_function())
 }

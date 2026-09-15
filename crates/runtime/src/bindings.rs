@@ -5,16 +5,17 @@ use rquickjs::function;
 use rquickjs::function::{Constructor, Rest, This};
 use rquickjs::{Ctx, Function, Object, Value};
 use smallvec::SmallVec;
-use wit_dylib_ffi::{Resource, Wit};
+use wit_dylib_ffi::{Resource, Type, Wit};
 
 use crate::CtxExt;
 use crate::futures::{make_future, register_future_classes};
+use crate::resources::{imported_resource_prototype, validate_imported_resource};
 use crate::result::ResultBoundary;
 use crate::streams::{make_stream, register_stream_classes};
 use crate::task::Pending;
 use crate::trivia::{fn_lookup, iface_lookup};
 use crate::wit_imports::{FuncKind, WitInterface, classify, find_resource};
-use crate::{DetHashSet, DetIndexMap, QjsCallContext, coerce_fn};
+use crate::{DetHashMap, DetHashSet, DetIndexMap, QjsCallContext, coerce_fn};
 
 /// Register all wit bindings on the js global scope.
 pub(crate) fn register(ctx: &rquickjs::Ctx<'_>, wit_def: Wit) -> rquickjs::Result<()> {
@@ -73,12 +74,15 @@ fn register_resource_classes<'js>(ctx: &Ctx<'js>, wit: Wit) -> rquickjs::Result<
 
     let mut built: Vec<(
         usize,
-        Persistent<Value<'static>>,
-        Persistent<Value<'static>>,
+        Persistent<Constructor<'static>>,
+        Persistent<Object<'static>>,
     )> = Vec::new();
 
+    let native_proto = imported_resource_prototype(ctx)?;
     for (index, group) in groups {
-        let prototype = Object::new(ctx.clone())?;
+        let proto = Object::new(ctx.clone())?;
+        proto.set_prototype(Some(&native_proto))?;
+
         for (method, func_index) in group.methods {
             let js_func = Function::new(
                 ctx.clone(),
@@ -90,13 +94,13 @@ fn register_resource_classes<'js>(ctx: &Ctx<'js>, wit: Wit) -> rquickjs::Result<
                     call_import(ctx, func_index, call_args)
                 },
             )?;
-            prototype.set(method.to_lower_camel_case(), js_func)?;
+            proto.set(method.to_lower_camel_case(), js_func)?;
         }
 
         let class: Constructor = match group.ctor {
             Some(func_index) => Constructor::new_prototype(
                 ctx,
-                prototype.clone(),
+                proto.clone(),
                 move |ctx: Ctx<'js>, args: Rest<Value<'js>>| {
                     call_import(ctx, func_index, SmallVec::from_vec(args.0))
                 },
@@ -105,7 +109,7 @@ fn register_resource_classes<'js>(ctx: &Ctx<'js>, wit: Wit) -> rquickjs::Result<
                 let resource_name = group.resource.name();
                 Constructor::new_prototype(
                     ctx,
-                    prototype.clone(),
+                    proto.clone(),
                     move |ctx: Ctx<'js>, _args: Rest<Value<'js>>| -> rquickjs::Result<Value<'js>> {
                         Err(rquickjs::Exception::throw_type(
                             &ctx,
@@ -126,8 +130,8 @@ fn register_resource_classes<'js>(ctx: &Ctx<'js>, wit: Wit) -> rquickjs::Result<
 
         built.push((
             index,
-            Persistent::save(ctx, class.into_value()),
-            Persistent::save(ctx, prototype.into_value()),
+            Persistent::save(ctx, class),
+            Persistent::save(ctx, proto),
         ));
     }
 
@@ -202,6 +206,38 @@ fn call_import<'js>(
     let wit_def = ctx.wit();
     let func = wit_def.import_func(func_index);
 
+    let param_count = func.params().len();
+    if args.len() < param_count {
+        return Err(rquickjs::Exception::throw_type(
+            &ctx,
+            &format!("{} requires {param_count} arguments", func.name()),
+        ));
+    }
+
+    let mut resources = DetHashMap::default();
+    for (mut ty, arg) in func.params().zip(&args) {
+        while let Type::Alias(alias) = ty {
+            ty = alias.ty();
+        }
+        let (resource, owned) = match ty {
+            Type::Own(resource) => (resource, true),
+            Type::Borrow(resource) => (resource, false),
+            _ => continue,
+        };
+        if resource.new().is_some() {
+            continue;
+        }
+        let handle = validate_imported_resource(resource, arg, owned)?;
+        if let Some(was_owned) = resources.insert((resource.index(), handle), owned)
+            && (was_owned || owned)
+        {
+            return Err(rquickjs::Exception::throw_type(
+                &ctx,
+                "a transferred resource cannot be used by another argument in the same call",
+            ));
+        }
+    }
+
     let boundary = ResultBoundary::new(func.result());
     let mut call = QjsCallContext::default();
     for arg in args.into_iter().rev() {
@@ -209,14 +245,15 @@ fn call_import<'js>(
     }
 
     if func.is_async() {
+        ctx.task().ensure_active(&ctx)?;
         let (promise, resolve, reject) = ctx.promise()?;
 
         if let Some(pending) = unsafe { func.call_import_async(&mut call) } {
             let handle = pending.subtask;
             let buffer = pending.buffer;
 
-            let resolve = Persistent::save(&ctx, resolve.into_value());
-            let reject = Persistent::save(&ctx, reject.into_value());
+            let resolve = Persistent::save(&ctx, resolve);
+            let reject = Persistent::save(&ctx, reject);
             let pending = Pending::ImportCall {
                 func_index,
                 call,
@@ -226,15 +263,16 @@ fn call_import<'js>(
             };
             ctx.task().register(handle, pending);
         } else {
+            call.complete_transfers(1);
             boundary
                 .lift(&ctx, call.maybe_pop_value(&ctx)?)?
-                .settle(&resolve, &reject)
-                .expect("Failed to settle async import");
+                .settle(&resolve, &reject)?;
         }
 
         Ok(promise.into_value())
     } else {
         func.call_import_sync(&mut call);
+        call.complete_transfers(1);
         boundary
             .lift(&ctx, call.maybe_pop_value(&ctx)?)?
             .into_result(&ctx)
@@ -332,6 +370,9 @@ fn build_async_exports<'js>(
                 let then_cb = Function::new(
                     ctx.clone(),
                     coerce_fn(move |ctx: Ctx<'_>, args: Rest<Value<'_>>| {
+                        if ctx.task().is_cancelling() {
+                            return Ok(Value::new_undefined(ctx));
+                        }
                         let value = args
                             .0
                             .into_iter()
@@ -342,14 +383,16 @@ fn build_async_exports<'js>(
                         let boundary = ResultBoundary::new(func.result());
                         let mut call = QjsCallContext::default();
 
-                        let value = boundary.lower_value(&ctx, value).unwrap_or_else(|e| {
-                            panic!("Call failed '{}': {:?}", "async export", e)
-                        });
+                        let value = boundary
+                            .lower_value(&ctx, value)
+                            .expect("Call failed 'async export'");
 
                         if let Some(value) = value {
                             call.push_value(&ctx, value);
                         }
+                        ctx.task().finish_export();
                         func.call_task_return(&mut call);
+                        call.complete_transfers(1);
                         Ok(Value::new_undefined(ctx))
                     }),
                 )?;
@@ -357,6 +400,9 @@ fn build_async_exports<'js>(
                 let catch_cb = Function::new(
                     ctx.clone(),
                     coerce_fn(move |ctx: Ctx<'_>, args: Rest<Value<'_>>| {
+                        if ctx.task().is_cancelling() {
+                            return Ok(Value::new_undefined(ctx));
+                        }
                         let reason = args
                             .0
                             .into_iter()
@@ -365,15 +411,17 @@ fn build_async_exports<'js>(
                         let func = ctx.wit().export_func(func_index);
                         let boundary = ResultBoundary::new(func.result());
                         let mut call = QjsCallContext::default();
-                        let value = boundary.lower_throw(&ctx, reason).unwrap_or_else(|e| {
-                            panic!("Call failed '{}': {:?}", "async export", e)
-                        });
+                        let value = boundary
+                            .lower_throw(&ctx, reason)
+                            .expect("Call failed 'async export'");
 
                         if let Some(value) = value {
                             call.push_value(&ctx, value);
                         }
 
+                        ctx.task().finish_export();
                         func.call_task_return(&mut call);
+                        call.complete_transfers(1);
                         Ok(Value::new_undefined(ctx))
                     }),
                 )?;
@@ -414,21 +462,9 @@ fn register_cqjs_namespace(ctx: &rquickjs::Ctx<'_>, wit_def: Wit) -> rquickjs::R
     let ns = rquickjs::Object::new(ctx.clone())?;
 
     // Stream/future factories
-    ns.set(
-        "makeStream",
-        Function::new(
-            ctx.clone(),
-            coerce_fn(move |ctx: Ctx<'_>, args: Rest<Value<'_>>| make_stream(ctx, args)),
-        )?,
-    )?;
+    ns.set("makeStream", Function::new(ctx.clone(), make_stream)?)?;
 
-    ns.set(
-        "makeFuture",
-        Function::new(
-            ctx.clone(),
-            coerce_fn(move |ctx: Ctx<'_>, args: Rest<Value<'_>>| make_future(ctx, args)),
-        )?,
-    )?;
+    ns.set("makeFuture", Function::new(ctx.clone(), make_future)?)?;
 
     // Memory introspection
     ns.set(
@@ -466,10 +502,8 @@ fn register_cqjs_namespace(ctx: &rquickjs::Ctx<'_>, wit_def: Wit) -> rquickjs::R
             ctx.clone(),
             coerce_fn(
                 move |ctx: Ctx<'_>, _args: Rest<Value<'_>>| -> rquickjs::Result<Value<'_>> {
-                    unsafe {
-                        let rt = rquickjs::qjs::JS_GetRuntime(ctx.as_raw().as_ptr());
-                        rquickjs::qjs::JS_RunGC(rt);
-                    }
+                    ctx.run_gc();
+                    crate::resources::drain_resource_drops(&ctx);
                     Ok(Value::new_undefined(ctx))
                 },
             ),

@@ -2,7 +2,7 @@ use crate::CtxExt;
 use crate::with_ctx;
 
 use heck::ToLowerCamelCase;
-use rquickjs::{Atom, Function, Persistent, Symbol};
+use rquickjs::{Atom, Function, Object, Persistent, Symbol};
 use rquickjs::{Result, Value, function::Rest};
 
 /// Coerce closure lifetimes so the returned `Value<'js>` gets the same
@@ -18,12 +18,11 @@ where
 
 /// Resolve a JS Promise by calling the stored resolve function with the given value.
 pub(crate) fn resolve_promise(
-    resolve: Persistent<Value<'static>>,
+    resolve: Persistent<Function<'static>>,
     result: Option<Persistent<Value<'static>>>,
 ) {
     with_ctx(|ctx| {
-        let resolve_val = resolve.restore(ctx).unwrap();
-        let resolve_fn = resolve_val.get::<Function>().unwrap();
+        let resolve_fn = resolve.restore(ctx).expect("restore promise resolver");
         let result_val = result.map_or(Value::new_undefined(ctx.clone()), |res| {
             res.restore(ctx).unwrap()
         });
@@ -35,12 +34,11 @@ pub(crate) fn resolve_promise(
 }
 
 pub(crate) fn reject_promise(
-    reject: Persistent<Value<'static>>,
+    reject: Persistent<Function<'static>>,
     reason: Persistent<Value<'static>>,
 ) {
     with_ctx(|ctx| {
-        let reject_val = reject.restore(ctx).unwrap();
-        let reject_fn = reject_val.get::<Function>().unwrap();
+        let reject_fn = reject.restore(ctx).expect("restore promise rejecter");
         let reason_val = reason.restore(ctx).unwrap();
 
         reject_fn
@@ -49,9 +47,11 @@ pub(crate) fn reject_promise(
     });
 }
 
-/// Get `Symbol.for("dispose")` via the rquickjs API.
+/// Get the well-known `Symbol.dispose`.
 pub(crate) fn symbol_dispose<'js>(ctx: &rquickjs::Ctx<'js>) -> Result<Atom<'js>> {
-    Ok(Symbol::new_global(ctx.clone(), "dispose")?.as_atom())
+    let symbol: Object = ctx.globals().get("Symbol")?;
+    let dispose: Symbol = symbol.get("dispose")?;
+    Ok(dispose.as_atom())
 }
 
 /// Convert a WIT function name to lower camel case, caching the result.

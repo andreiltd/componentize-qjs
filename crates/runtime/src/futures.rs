@@ -1,7 +1,7 @@
 //! component-model future operations using rquickjs classes.
 use rquickjs::class::{Class, JsClass, Trace};
 use rquickjs::function::This;
-use rquickjs::{Ctx, Function, Object, Persistent, Value};
+use rquickjs::{CatchResultExt, Ctx, Function, Object, Persistent, Promise, Value};
 use rquickjs::{JsLifetime, function};
 
 use crate::CtxExt;
@@ -11,20 +11,22 @@ use crate::task::Pending;
 use crate::{QjsCallContext, resolve_promise, symbol_dispose, with_ctx};
 
 #[derive(Trace, JsLifetime)]
-pub(crate) struct FutureReadable {
+pub(crate) struct FutureReadable<'js> {
     #[qjs(skip_trace)]
     pub(crate) end: CopyEnd,
+    promise: Option<Promise<'js>>,
 }
 
-impl FutureReadable {
+impl FutureReadable<'_> {
     fn new(type_index: u32, handle: u32) -> Self {
         Self {
             end: CopyEnd::new_future(type_index, handle),
+            promise: None,
         }
     }
 }
 
-impl<'js> JsClass<'js> for FutureReadable {
+impl<'js> JsClass<'js> for FutureReadable<'js> {
     const NAME: &'static str = "FutureReadable";
     type Mutable = rquickjs::class::Writable;
 
@@ -105,12 +107,12 @@ pub(crate) fn make_future_readable<'js>(
     Ok(instance.into_inner())
 }
 
-pub(crate) fn make_future<'js>(
-    ctx: Ctx<'js>,
-    args: function::Rest<Value<'js>>,
-) -> rquickjs::Result<Value<'js>> {
-    let type_index: u32 = args.0[0].get()?;
-    let ty = ctx.wit().future(type_index as usize);
+pub(crate) fn make_future<'js>(ctx: Ctx<'js>, type_index: u32) -> rquickjs::Result<Value<'js>> {
+    let ty = ctx
+        .wit()
+        .iter_futures()
+        .nth(type_index as usize)
+        .ok_or_else(|| rquickjs::Exception::throw_range(&ctx, "unknown WIT future type"))?;
 
     let handles = unsafe { ty.new()() };
     let tx_handle = (handles >> 32) as u32;
@@ -126,13 +128,51 @@ pub(crate) fn make_future<'js>(
     Ok(result.into_value())
 }
 
+pub(crate) fn lower_thenable<'js>(
+    ctx: &Ctx<'js>,
+    type_index: u32,
+    thenable: Value<'js>,
+) -> rquickjs::Result<u32> {
+    if !ctx.task().is_active() {
+        return Err(rquickjs::Error::new_from_js(
+            "thenable",
+            "WIT future lowering requires an active async call",
+        ));
+    }
+
+    let wit: Object = ctx.globals().get("wit")?;
+    let future: Function = wit.get("Future")?;
+    let from: Function = future.get("from")?;
+    let pair: Object = from.call((thenable, type_index))?;
+    let readable: Value = pair.get("readable")?;
+    let readable = Class::<FutureReadable>::from_value(&readable)?;
+    let handle = readable.borrow_mut().end.begin_transfer(type_index)?;
+
+    Ok(handle)
+}
+
 fn future_read<'js>(
-    this: This<Class<'js, FutureReadable>>,
+    this: This<Class<'js, FutureReadable<'js>>>,
     ctx: Ctx<'js>,
 ) -> rquickjs::Result<Value<'js>> {
+    {
+        let readable = this.0.borrow();
+        if readable.end.handle.is_none() {
+            return Err(rquickjs::Exception::throw_type(
+                &ctx,
+                "future already dropped or transferred",
+            ));
+        }
+        if let Some(promise) = &readable.promise {
+            return Ok(promise.clone().into_value());
+        }
+    }
+
+    ctx.task().ensure_active(&ctx)?;
     let (handle, type_index) = this.0.borrow().end.begin_op()?;
 
     let (promise, resolve, reject) = ctx.promise()?;
+    this.0.borrow_mut().promise = Some(promise.clone());
     let ty = ctx.wit().future(type_index as usize);
 
     let buffer = BufferGuard::new_zeroed(ty.abi_payload_size(), ty.abi_payload_align());
@@ -145,33 +185,33 @@ fn future_read<'js>(
         let pending = Pending::FutureRead {
             call,
             buffer,
-            resolve: Persistent::save(&ctx, resolve.into_value()),
-            reject: Persistent::save(&ctx, reject.into_value()),
+            resolve: Persistent::save(&ctx, resolve),
+            reject: Persistent::save(&ctx, reject),
             wrapper: Persistent::save(&ctx, this.0.into_inner().into_value()),
         };
 
         ctx.task().register(handle, pending);
     } else {
         let result_code = CopyResult::try_from(code & 0xF).expect("unknown copy result");
-        this.0.borrow_mut().end.mark_completed(result_code);
+        finish_read_state(&this.0, result_code);
 
         match result_code {
             CopyResult::Completed => {
                 unsafe { ty.lift(&mut call, buffer.ptr()) };
-                let result = call.pop_value(&ctx);
-                resolve
-                    .call::<_, Value>((result,))
-                    .expect("resolve future read");
+                let result = call
+                    .maybe_pop_value(&ctx)?
+                    .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
+                resolve.call::<_, Value>((result,))?;
             }
             CopyResult::Dropped => {
                 let msg =
                     rquickjs::String::from_str(ctx.clone(), "future writer dropped")?.into_value();
-                reject.call::<_, Value>((msg,)).ok();
+                reject.call::<_, Value>((msg,))?;
             }
             CopyResult::Cancelled => {
                 let msg =
                     rquickjs::String::from_str(ctx.clone(), "future read cancelled")?.into_value();
-                reject.call::<_, Value>((msg,)).ok();
+                reject.call::<_, Value>((msg,))?;
             }
         }
         drop(buffer);
@@ -180,33 +220,48 @@ fn future_read<'js>(
     Ok(promise.into_value())
 }
 
-fn future_cancel_read<'js>(
-    this: This<Class<'js, FutureReadable>>,
+fn finish_read_state<'js>(class: &Class<'js, FutureReadable<'js>>, result: CopyResult) {
+    let mut readable = class.borrow_mut();
+    readable.end.mark_completed(result);
+    if result == CopyResult::Cancelled {
+        readable.promise = None;
+    }
+}
+
+pub(crate) fn future_cancel_read<'js>(
+    this: This<Class<'js, FutureReadable<'js>>>,
     ctx: Ctx<'js>,
 ) -> rquickjs::Result<Value<'js>> {
     let (handle, type_index) = this.0.borrow().end.begin_cancel()?;
     let ty = ctx.wit().future(type_index as usize);
+    ctx.task().unjoin(handle);
     let code = unsafe { ty.cancel_read()(handle) };
 
     match unpack_copy_result(code) {
         None => {
+            ctx.task().rejoin(handle);
             this.0.borrow_mut().end.mark_cancel_blocked();
             Ok(Value::new_undefined(ctx))
         }
         Some((_progress, result)) => {
-            this.0.borrow_mut().end.mark_completed(result);
+            handle_read_event(handle, code);
             Ok(Value::new_number(ctx, result as u32 as f64))
         }
     }
 }
 
 fn future_drop_readable<'js>(
-    this: This<Class<'js, FutureReadable>>,
+    this: This<Class<'js, FutureReadable<'js>>>,
     ctx: Ctx<'js>,
 ) -> rquickjs::Result<()> {
-    let mut w = this.0.borrow_mut();
-    if let Some(handle) = w.end.handle.take() {
-        let ty = ctx.wit().future(w.end.type_index as usize);
+    let (handle, type_index) = {
+        let mut readable = this.0.borrow_mut();
+        let handle = readable.end.begin_drop()?;
+        readable.promise = None;
+        (handle, readable.end.type_index)
+    };
+    if let Some(handle) = handle {
+        let ty = ctx.wit().future(type_index as usize);
         unsafe { ty.drop_readable()(handle) };
     }
     Ok(())
@@ -217,6 +272,7 @@ fn future_write<'js>(
     ctx: Ctx<'js>,
     value: Value<'js>,
 ) -> rquickjs::Result<Value<'js>> {
+    ctx.task().ensure_active(&ctx)?;
     let (handle, type_index) = this.0.borrow().end.begin_op()?;
 
     let (promise, resolve, _reject) = ctx.promise()?;
@@ -235,7 +291,7 @@ fn future_write<'js>(
         let pending = Pending::FutureWrite {
             call,
             buffer,
-            resolve: Persistent::save(&ctx, resolve.into_value()),
+            resolve: Persistent::save(&ctx, resolve),
             wrapper: Persistent::save(&ctx, this.0.into_inner().into_value()),
         };
         ctx.task().register(handle, pending);
@@ -243,6 +299,7 @@ fn future_write<'js>(
         drop(buffer);
         let result_code = CopyResult::try_from(code & 0xF).expect("unknown copy result");
         let success = result_code == CopyResult::Completed;
+        call.complete_transfers(usize::from(success));
 
         this.0.borrow_mut().end.mark_completed(result_code);
         let result = Value::new_bool(ctx.clone(), success);
@@ -255,21 +312,23 @@ fn future_write<'js>(
     Ok(promise.into_value())
 }
 
-fn future_cancel_write<'js>(
+pub(crate) fn future_cancel_write<'js>(
     this: This<Class<'js, FutureWritable>>,
     ctx: Ctx<'js>,
 ) -> rquickjs::Result<Value<'js>> {
     let (handle, type_index) = this.0.borrow().end.begin_cancel()?;
     let ty = ctx.wit().future(type_index as usize);
+    ctx.task().unjoin(handle);
     let code = unsafe { ty.cancel_write()(handle) };
 
     match unpack_copy_result(code) {
         None => {
+            ctx.task().rejoin(handle);
             this.0.borrow_mut().end.mark_cancel_blocked();
             Ok(Value::new_undefined(ctx))
         }
         Some((_progress, result)) => {
-            this.0.borrow_mut().end.mark_completed(result);
+            handle_write_event(handle, code);
             Ok(Value::new_number(ctx, result as u32 as f64))
         }
     }
@@ -279,9 +338,13 @@ fn future_drop_writable<'js>(
     this: This<Class<'js, FutureWritable>>,
     ctx: Ctx<'js>,
 ) -> rquickjs::Result<()> {
-    let mut w = this.0.borrow_mut();
-    if let Some(handle) = w.end.handle.take() {
-        let ty = ctx.wit().future(w.end.type_index as usize);
+    let (handle, type_index) = {
+        let mut writable = this.0.borrow_mut();
+        (writable.end.begin_drop()?, writable.end.type_index)
+    };
+
+    if let Some(handle) = handle {
+        let ty = ctx.wit().future(type_index as usize);
         unsafe { ty.drop_writable()(handle) };
     }
     Ok(())
@@ -292,7 +355,7 @@ pub(crate) fn handle_write_event(handle: u32, result: u32) {
     let pending = with_ctx(|ctx| ctx.task().take(handle));
 
     let Pending::FutureWrite {
-        call: _call,
+        mut call,
         resolve,
         wrapper,
         ..
@@ -303,6 +366,7 @@ pub(crate) fn handle_write_event(handle: u32, result: u32) {
 
     let copy_result = CopyResult::try_from(result & 0xF).expect("unknown copy result");
     let success = copy_result == CopyResult::Completed;
+    call.complete_transfers(usize::from(success));
 
     let result = with_ctx(|ctx| {
         let w = wrapper.restore(ctx).unwrap();
@@ -339,13 +403,13 @@ pub(crate) fn handle_read_event(handle: u32, result: u32) {
             let result = with_ctx(|ctx| {
                 let w = wrapper.restore(ctx).unwrap();
                 let class = Class::<FutureReadable>::from_value(&w).unwrap();
-                class.borrow_mut().end.mark_completed(copy_result);
+                finish_read_state(&class, copy_result);
 
                 let type_index = class.borrow().end.type_index;
                 let ty = ctx.wit().future(type_index as usize);
                 unsafe { ty.lift(&mut call, buffer.ptr()) };
 
-                Some(call.pop_persistent())
+                call.maybe_pop_persistent()
             });
 
             drop(buffer);
@@ -356,10 +420,9 @@ pub(crate) fn handle_read_event(handle: u32, result: u32) {
             with_ctx(|ctx| {
                 let w = wrapper.restore(ctx).unwrap();
                 let class = Class::<FutureReadable>::from_value(&w).unwrap();
-                class.borrow_mut().end.mark_completed(copy_result);
+                finish_read_state(&class, copy_result);
 
-                let reject_fn = reject.restore(ctx).unwrap();
-                let reject_fn: rquickjs::Function = reject_fn.get().unwrap();
+                let reject_fn = reject.restore(ctx).expect("restore future rejecter");
 
                 let msg = if copy_result == CopyResult::Dropped {
                     "future writer dropped"
@@ -369,7 +432,10 @@ pub(crate) fn handle_read_event(handle: u32, result: u32) {
                 let msg_val = rquickjs::String::from_str(ctx.clone(), msg)
                     .unwrap()
                     .into_value();
-                reject_fn.call::<_, Value>((msg_val,)).ok();
+                reject_fn
+                    .call::<_, Value>((msg_val,))
+                    .catch(ctx)
+                    .expect("Failed to reject future read");
             });
         }
     }

@@ -11,6 +11,7 @@ mod streams;
 mod tagged;
 mod task;
 mod trivia;
+mod typed_array;
 mod wit_imports;
 
 use std::cell::{Cell, OnceCell, RefCell};
@@ -23,9 +24,7 @@ use task::TaskState;
 use wit_dylib_ffi::Wit;
 
 use crate::interpreter::WitData;
-use crate::resources::BorrowedResource;
-use crate::resources::ResourceClasses;
-use crate::resources::ResourceTable;
+use crate::resources::*;
 use crate::trivia::*;
 
 /// Deterministic, fixed-seed hash map/set used everywhere in the runtime so the
@@ -157,6 +156,9 @@ impl JsState {
             context.with(|ctx| {
                 ctx.store_userdata(FnNameCache::default())
                     .expect("Failed to store function name cache");
+                // Startup cleanup also runs for empty worlds without WIT initialization.
+                ctx.store_userdata(ResourceClasses::default())
+                    .expect("Failed to store ResourceClasses userdata");
                 module::init_state(&ctx);
             });
 
@@ -214,11 +216,25 @@ pub struct QjsCallContext {
     temp_strings: SmallVec<[String; 4]>,
     /// Raw allocations to free when this context is dropped
     deferred_deallocs: SmallVec<[(*mut u8, std::alloc::Layout); 4]>,
+    /// Keeps imported resources alive while an outgoing call borrows them
+    loans: SmallVec<[ImportedResourceLoan; 4]>,
+    /// Own transfers grouped by stream element, or group zero for ordinary calls
+    transfers: SmallVec<[(usize, ImportedResourceTransfer); 4]>,
+    /// Number of transfer groups consumed by the callee,
+    transfer_group: usize,
     /// Imported resource borrows to drop when this context is dropped
     borrows: SmallVec<[BorrowedResource; 4]>,
 }
 
 impl QjsCallContext {
+    pub(crate) fn complete_transfers(&mut self, consumed_groups: usize) {
+        for (group, transfer) in self.transfers.drain(..) {
+            if group < consumed_groups {
+                transfer.commit();
+            }
+        }
+    }
+
     pub(crate) fn push_value<'js>(&mut self, ctx: &rquickjs::Ctx<'js>, val: Value<'js>) {
         self.stack.push(Persistent::save(ctx, val));
     }
@@ -261,16 +277,16 @@ impl QjsCallContext {
 
 impl Drop for QjsCallContext {
     fn drop(&mut self) {
+        self.transfers.clear();
         for (ptr, layout) in self.deferred_deallocs.drain(..) {
-            unsafe {
-                std::alloc::dealloc(ptr, layout);
+            if layout.size() > 0 {
+                unsafe {
+                    std::alloc::dealloc(ptr, layout);
+                }
             }
         }
-        for borrow in self.borrows.drain(..) {
-            unsafe {
-                (borrow.drop_fn)(borrow.handle);
-            }
-        }
+        self.loans.clear();
+        self.borrows.clear();
     }
 }
 
@@ -294,15 +310,14 @@ fn init_js(
     }
 
     if disable_gc {
-        state.with_ctx(|ctx| unsafe {
-            let rt = rquickjs::qjs::JS_GetRuntime(ctx.as_raw().as_ptr());
-            rquickjs::qjs::JS_SetGCThreshold(rt, usize::MAX as _);
-        });
+        state.context.runtime().set_gc_threshold(usize::MAX);
     }
 
     state.with_ctx(|ctx| {
         module::evaluate_shim(ctx, shim)?;
-        module::evaluate_user(ctx, js_source, entry_path)
+        let result = module::evaluate_user(ctx, js_source, entry_path);
+        resources::drain_resource_drops(ctx);
+        result
     })?;
 
     unsafe {

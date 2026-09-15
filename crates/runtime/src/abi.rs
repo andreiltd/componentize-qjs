@@ -184,10 +184,10 @@ impl CopyEnd {
     /// Validate that the end is idle and ready for a new read/write.
     /// Returns `(handle, type_index)` on success.
     pub(crate) fn begin_op(&self) -> rquickjs::Result<(u32, u32)> {
-        if self.state.copying() {
+        if self.state != CopyState::Idle {
             return Err(rquickjs::Error::new_from_js(
                 self.kind.label(),
-                "operation while copy in progress",
+                "operation requires an idle endpoint",
             ));
         }
 
@@ -196,6 +196,30 @@ impl CopyEnd {
             .ok_or_else(|| rquickjs::Error::new_from_js("object", "already dropped"))?;
 
         Ok((h, self.type_index))
+    }
+
+    pub(crate) fn begin_transfer(&mut self, type_index: u32) -> rquickjs::Result<u32> {
+        if self.type_index != type_index {
+            return Err(rquickjs::Error::new_from_js(
+                self.kind.label(),
+                "matching WIT type",
+            ));
+        }
+        let (handle, _) = self.begin_op()?;
+        self.handle = None;
+        self.state = CopyState::Done;
+        Ok(handle)
+    }
+
+    pub(crate) fn begin_drop(&mut self) -> rquickjs::Result<Option<u32>> {
+        if self.state.copying() {
+            return Err(rquickjs::Error::new_from_js(
+                self.kind.label(),
+                "cancel and await the active operation before dropping",
+            ));
+        }
+        self.state = CopyState::Done;
+        Ok(self.handle.take())
     }
 
     /// Validate that the end has an active async copy that can be cancelled.
@@ -308,7 +332,6 @@ mod async_builtins {
         pub(crate) fn subtask_drop(task: u32);
 
         #[link_name = "[subtask-cancel]"]
-        #[allow(dead_code)]
         pub(crate) fn subtask_cancel(task: u32) -> u32;
 
         #[link_name = "[context-get-0]"]
@@ -325,7 +348,6 @@ mod async_builtins {
     #[link(wasm_import_module = "[export]$root")]
     unsafe extern "C" {
         #[link_name = "[task-cancel]"]
-        #[allow(dead_code)]
         pub(crate) fn task_cancel();
 
         #[link_name = "[backpressure-set]"]

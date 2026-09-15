@@ -28,6 +28,18 @@ world wasi-stdio {
     export echo-stdin-to-stdout: func() -> result;
 }
 
+world wasi-resource-cleanup {
+    import wasi:cli/stdin@0.2.12;
+    import wasi:io/streams@0.2.12;
+
+    record marker {
+        value: u32,
+    }
+
+    export make-result: func() -> marker;
+    export flush: func();
+}
+
 world wasi-import-types {
     import wasi:filesystem/types@0.2.12;
 
