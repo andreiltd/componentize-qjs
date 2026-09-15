@@ -1,0 +1,20 @@
+package test:all;
+
+world all-async {
+    record point { x: f64, y: f64 }
+    variant response { empty, message(string), code(u32) }
+
+    export echo-u32: async func(x: u32) -> u32;
+    export echo-string: async func(s: string) -> string;
+    export echo-bool: async func(b: bool) -> bool;
+    export do-nothing: async func();
+    export delayed-echo: async func(x: u32) -> u32;
+    export echo-point: async func(p: point) -> point;
+    export echo-option: async func(x: option<u32>) -> option<u32>;
+    export safe-divide: async func(a: f64, b: f64) -> result<f64, string>;
+    export double-list: async func(xs: list<u32>) -> list<u32>;
+    export chain: async func(x: u32) -> u32;
+    export validate: async func(x: u32) -> result<u32>;
+    export process: async func(kind: u32) -> response;
+    export next-count: async func() -> u32;
+}

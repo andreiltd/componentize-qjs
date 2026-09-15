@@ -1,9 +1,37 @@
 //! WIT type integration tests for componentize-qjs
+//! Value conversions share compiled code; world-specific regressions remain standalone.
 mod common;
 
-use wasmtime::component::Val;
+use std::sync::OnceLock;
 
-use common::TestCase;
+use wasmtime::component::{Component, Val};
+
+use common::{ComponentInstance, TestCase};
+
+fn component() -> ComponentInstance {
+    static COMPONENT: OnceLock<Component> = OnceLock::new();
+    let component = COMPONENT.get_or_init(|| {
+        TestCase::new()
+            .wit(include_str!("wit/all/all.wit"))
+            .script(include_str!("js/all.js"))
+            .compile()
+            .expect("failed to compile all fixture")
+    });
+
+    ComponentInstance::from_component(component).expect("failed to instantiate all fixture")
+}
+
+#[test]
+fn test_all_instances_are_isolated() {
+    let mut first = component();
+    let mut second = component();
+    assert_eq!(first.call1("next-count", &[]), Val::U32(1));
+    assert_eq!(first.call1("next-count", &[]), Val::U32(2));
+    assert_eq!(second.call1("next-count", &[]), Val::U32(1));
+
+    drop(first);
+    assert_eq!(component().call1("next-count", &[]), Val::U32(1));
+}
 
 #[cfg(not(feature = "component-model-async"))]
 #[test]
@@ -26,26 +54,9 @@ fn test_sync_runtime_does_not_require_component_model_async() {
 
 #[test]
 fn test_hello_world() {
-    TestCase::new()
-        .wit(
-            r#"
-            package test:hello;
-            world hello {
-                export greet: func() -> string;
-                export add: func(a: u32, b: u32) -> u32;
-            }
-        "#,
-        )
-        .script(
-            r#"
-            export function greet() { return "Hello, World!"; }
-            export function add(a, b) { return a + b; }
-        "#,
-        )
+    component()
         .expect_call("greet", vec![], Val::String("Hello, World!".into()))
         .expect_call("add", vec![Val::U32(2), Val::U32(3)], Val::U32(5))
-        .build()
-        .unwrap()
         .run();
 }
 
@@ -90,26 +101,7 @@ fn test_export_only_interface_is_not_importable() {
 
 #[test]
 fn test_numeric_types() {
-    TestCase::new()
-        .wit(
-            r#"
-            package test:types;
-            world types {
-                export add-u32: func(a: u32, b: u32) -> u32;
-                export add-s32: func(a: s32, b: s32) -> s32;
-                export add-f64: func(a: f64, b: f64) -> f64;
-                export negate: func(b: bool) -> bool;
-            }
-        "#,
-        )
-        .script(
-            r#"
-            export function addU32(a, b) { return a + b; }
-            export function addS32(a, b) { return a + b; }
-            export function addF64(a, b) { return a + b; }
-            export function negate(b) { return !b; }
-        "#,
-        )
+    component()
         .expect_call("add-u32", vec![Val::U32(100), Val::U32(200)], Val::U32(300))
         .expect_call("add-s32", vec![Val::S32(-10), Val::S32(5)], Val::S32(-5))
         .expect_call(
@@ -118,8 +110,6 @@ fn test_numeric_types() {
             Val::Float64(4.0),
         )
         .expect_call("negate", vec![Val::Bool(true)], Val::Bool(false))
-        .build()
-        .unwrap()
         .run();
 }
 
@@ -132,39 +122,18 @@ fn test_record_type() {
         ])
     };
 
-    TestCase::new()
-        .wit(
-            r#"
-            package test:records;
-            world record-test {
-                record point { x: f64, y: f64 }
-                export add-points: func(a: point, b: point) -> point;
-            }
-        "#,
-        )
-        .script("export function addPoints(a, b) { return { x: a.x + b.x, y: a.y + b.y }; }")
+    component()
         .expect_call(
             "add-points",
             vec![point(1.0, 2.0), point(3.0, 4.0)],
             point(4.0, 6.0),
         )
-        .build()
-        .unwrap()
         .run();
 }
 
 #[test]
 fn test_list_type() {
-    TestCase::new()
-        .wit(
-            r#"
-            package test:lists;
-            world list-test {
-                export sum-list: func(nums: list<u32>) -> u32;
-            }
-        "#,
-        )
-        .script("export function sumList(nums) { return nums.reduce((a, b) => a + b, 0); }")
+    component()
         .expect_call(
             "sum-list",
             vec![Val::List(vec![
@@ -176,51 +145,12 @@ fn test_list_type() {
             ])],
             Val::U32(15),
         )
-        .build()
-        .unwrap()
         .run();
 }
 
 #[test]
 fn test_map_type() {
-    TestCase::new()
-        .wit(
-            r#"
-            package test:maps;
-            world map-test {
-                export scale-map: func(values: map<string, u32>) -> map<string, u32>;
-                export sum-map: func(values: map<string, list<u32>>) -> map<string, u32>;
-                export empty-map: func() -> map<string, u32>;
-            }
-        "#,
-        )
-        .script(
-            r#"
-            export function scaleMap(values) {
-                if (!(values instanceof Map)) {
-                    throw new TypeError("expected Map");
-                }
-
-                const result = new Map();
-                for (const [key, value] of values) {
-                    result.set(key.toUpperCase(), value * 2);
-                }
-                return result;
-            }
-
-            export function sumMap(values) {
-                const result = new Map();
-                for (const [key, items] of values) {
-                    result.set(key, items.reduce((sum, item) => sum + item, 0));
-                }
-                return result;
-            }
-
-            export function emptyMap() {
-                return new Map();
-            }
-        "#,
-        )
+    component()
         .expect_call(
             "scale-map",
             vec![Val::Map(vec![
@@ -247,89 +177,36 @@ fn test_map_type() {
             ]),
         )
         .expect_call("empty-map", vec![], Val::Map(vec![]))
-        .build()
-        .unwrap()
         .run();
 }
 
 #[test]
 fn test_typed_array_list_return() {
-    TestCase::new()
-        .wit(
-            r#"
-            package test:typed-array-list;
-            world typed-array-list {
-                export bytes: func() -> list<u8>;
-                export empty: func() -> list<u8>;
-            }
-        "#,
-        )
-        .script(
-            r#"
-            export function bytes() { return new Uint8Array([0, 1, 127, 255]); }
-            export function empty() { return new Uint8Array(); }
-        "#,
-        )
+    component()
         .expect_call(
             "bytes",
             vec![],
             Val::List(vec![Val::U8(0), Val::U8(1), Val::U8(127), Val::U8(255)]),
         )
         .expect_call("empty", vec![], Val::List(vec![]))
-        .build()
-        .unwrap()
         .run();
 }
 
 #[test]
 fn test_option_type() {
-    TestCase::new()
-        .wit(
-            r#"
-            package test:options;
-            world option-test {
-                export maybe-double: func(n: option<u32>) -> option<u32>;
-            }
-        "#,
-        )
-        .script(
-            r#"
-            export function maybeDouble(n) {
-                if (n === null || n === undefined) { return null; }
-                return n * 2;
-            }
-        "#,
-        )
+    component()
         .expect_call(
             "maybe-double",
             vec![Val::Option(Some(Box::new(Val::U32(5))))],
             Val::Option(Some(Box::new(Val::U32(10)))),
         )
         .expect_call("maybe-double", vec![Val::Option(None)], Val::Option(None))
-        .build()
-        .unwrap()
         .run();
 }
 
 #[test]
 fn test_result_type() {
-    TestCase::new()
-        .wit(
-            r#"
-            package test:results;
-            world result-test {
-                export safe-div: func(a: u32, b: u32) -> result<u32, string>;
-            }
-        "#,
-        )
-        .script(
-            r#"
-            export function safeDiv(a, b) {
-                if (b === 0) { throw "division by zero"; }
-                return Math.floor(a / b);
-            }
-        "#,
-        )
+    component()
         .expect_call(
             "safe-div",
             vec![Val::U32(10), Val::U32(2)],
@@ -340,8 +217,6 @@ fn test_result_type() {
             vec![Val::U32(10), Val::U32(0)],
             Val::Result(Err(Some(Box::new(Val::String("division by zero".into()))))),
         )
-        .build()
-        .unwrap()
         .run();
 }
 
@@ -377,30 +252,7 @@ fn test_stub_wasi() {
 
 #[test]
 fn test_all_integer_types() {
-    TestCase::new()
-        .wit(
-            r#"
-            package test:integers;
-            world integers {
-                export add-u8: func(a: u8, b: u8) -> u8;
-                export add-s8: func(a: s8, b: s8) -> s8;
-                export add-u16: func(a: u16, b: u16) -> u16;
-                export add-s16: func(a: s16, b: s16) -> s16;
-                export add-u64: func(a: u64, b: u64) -> u64;
-                export add-s64: func(a: s64, b: s64) -> s64;
-            }
-        "#,
-        )
-        .script(
-            r#"
-            export function addU8(a, b) { return a + b; }
-            export function addS8(a, b) { return a + b; }
-            export function addU16(a, b) { return a + b; }
-            export function addS16(a, b) { return a + b; }
-            export function addU64(a, b) { return a + b; }
-            export function addS64(a, b) { return a + b; }
-        "#,
-        )
+    component()
         .expect_call("add-u8", vec![Val::U8(200), Val::U8(55)], Val::U8(255))
         .expect_call("add-s8", vec![Val::S8(-100), Val::S8(50)], Val::S8(-50))
         .expect_call(
@@ -423,24 +275,12 @@ fn test_all_integer_types() {
             vec![Val::S64(-1_000_000_000), Val::S64(500_000_000)],
             Val::S64(-500_000_000),
         )
-        .build()
-        .unwrap()
         .run();
 }
 
 #[test]
 fn test_float_types() {
-    TestCase::new()
-        .wit(
-            r#"
-            package test:floats;
-            world floats {
-                export add-f32: func(a: f32, b: f32) -> f32;
-                export add-f64: func(a: f64, b: f64) -> f64;
-            }
-        "#,
-        )
-        .script("export function addF32(a, b) { return a + b; }\nexport function addF64(a, b) { return a + b; }")
+    component()
         .expect_call(
             "add-f32",
             vec![Val::Float32(1.5), Val::Float32(2.5)],
@@ -451,31 +291,12 @@ fn test_float_types() {
             vec![Val::Float64(1.5), Val::Float64(2.5)],
             Val::Float64(4.0),
         )
-        .build()
-        .unwrap()
         .run();
 }
 
 #[test]
 fn test_string_operations() {
-    TestCase::new()
-        .wit(
-            r#"
-            package test:strings;
-            world strings {
-                export take-string: func(s: string) -> u32;
-                export return-string: func() -> string;
-                export concat-strings: func(a: string, b: string) -> string;
-            }
-        "#,
-        )
-        .script(
-            r#"
-            export function takeString(s) { return s.length; }
-            export function returnString() { return "hello from js"; }
-            export function concatStrings(a, b) { return a + b; }
-        "#,
-        )
+    component()
         .expect_call(
             "take-string",
             vec![Val::String("hello".into())],
@@ -487,33 +308,14 @@ fn test_string_operations() {
             vec![Val::String("foo".into()), Val::String("bar".into())],
             Val::String("foobar".into()),
         )
-        .build()
-        .unwrap()
         .run();
 }
 
 #[test]
 fn test_char_type() {
-    TestCase::new()
-        .wit(
-            r#"
-            package test:chars;
-            world chars {
-                export take-char: func(c: char) -> u32;
-                export return-char: func() -> char;
-            }
-        "#,
-        )
-        .script(
-            r#"
-            export function takeChar(c) { return c.codePointAt(0); }
-            export function returnChar() { return "A"; }
-        "#,
-        )
+    component()
         .expect_call("take-char", vec![Val::Char('A')], Val::U32(65))
         .expect_call("return-char", vec![], Val::Char('A'))
-        .build()
-        .unwrap()
         .run();
 }
 
@@ -582,28 +384,7 @@ fn test_result_throw_error_compatibility() {
 #[test]
 fn test_enum_type() {
     // Enums are represented as their case-name strings in JS
-    TestCase::new()
-        .wit(
-            r#"
-            package test:enums;
-            world enums {
-                enum color { red, green, blue }
-                export identify-color: func(c: color) -> string;
-                export favorite-color: func() -> color;
-            }
-        "#,
-        )
-        .script(
-            r#"
-            export function identifyColor(c) {
-                if (c === "red") return "is red";
-                if (c === "green") return "is green";
-                if (c === "blue") return "is blue";
-                return "unknown";
-            }
-            export function favoriteColor() { return "green"; }
-        "#,
-        )
+    component()
         .expect_call(
             "identify-color",
             vec![Val::Enum("red".into())],
@@ -615,35 +396,13 @@ fn test_enum_type() {
             Val::String("is blue".into()),
         )
         .expect_call("favorite-color", vec![], Val::Enum("green".into()))
-        .build()
-        .unwrap()
         .run();
 }
 
 #[test]
 fn test_variant_type() {
     // Variants are { tag: case-name, val } objects in JS
-    TestCase::new()
-        .wit(
-            r#"
-            package test:variants;
-            world variants {
-                variant shape { circle(f64), none }
-                export describe-shape: func(s: shape) -> string;
-                export make-circle: func(r: f64) -> shape;
-            }
-        "#,
-        )
-        .script(
-            r#"
-            export function describeShape(s) {
-                if (s.tag === "circle") return "circle with radius " + s.val;
-                if (s.tag === "none") return "no shape";
-                return "unknown";
-            }
-            export function makeCircle(r) { return { tag: "circle", val: r }; }
-        "#,
-        )
+    component()
         .expect_call(
             "describe-shape",
             vec![Val::Variant(
@@ -662,28 +421,13 @@ fn test_variant_type() {
             vec![Val::Float64(2.0)],
             Val::Variant("circle".into(), Some(Box::new(Val::Float64(2.0)))),
         )
-        .build()
-        .unwrap()
         .run();
 }
 
 #[test]
 fn test_flag_type() {
     // Flags are represented as { name: boolean } objects in JS
-    TestCase::new()
-        .wit(
-            r#"
-            package test:flagtest;
-            world flag-test {
-                flags permissions { read, write, execute }
-                export check-read: func(p: permissions) -> bool;
-                export read-write: func() -> permissions;
-            }
-        "#,
-        )
-        .script(
-            "export function checkRead(p) { return p.read === true; }\nexport function readWrite() { return { read: true, write: true }; }",
-        )
+    component()
         .expect_call(
             "check-read",
             vec![Val::Flags(vec!["read".into(), "write".into()])],
@@ -699,30 +443,17 @@ fn test_flag_type() {
             vec![],
             Val::Flags(vec!["read".into(), "write".into()]),
         )
-        .build()
-        .unwrap()
         .run();
 }
 
 #[test]
 fn test_tuple_return() {
-    TestCase::new()
-        .wit(
-            r#"
-            package test:tuples;
-            world tuples {
-                export swap: func(a: u32, b: u32) -> tuple<u32, u32>;
-            }
-        "#,
-        )
-        .script("export function swap(a, b) { return [b, a]; }")
+    component()
         .expect_call(
             "swap",
             vec![Val::U32(1), Val::U32(2)],
             Val::Tuple(vec![Val::U32(2), Val::U32(1)]),
         )
-        .build()
-        .unwrap()
         .run();
 }
 
@@ -730,48 +461,17 @@ fn test_tuple_return() {
 fn test_many_arguments() {
     let params: Vec<Val> = (1..=10).map(Val::U32).collect();
 
-    TestCase::new()
-        .wit(r#"
-            package test:manyargs;
-            world many-args {
-                export sum-ten: func(a1: u32, a2: u32, a3: u32, a4: u32, a5: u32, a6: u32, a7: u32, a8: u32, a9: u32, a10: u32) -> u32;
-            }
-        "#)
-        .script(r#"
-            export function sumTen(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10) {
-                return a1 + a2 + a3 + a4 + a5 + a6 + a7 + a8 + a9 + a10;
-            }
-        "#)
+    component()
         .expect_call("sum-ten", params, Val::U32(55))
-        .build().unwrap()
         .run();
 }
 
 #[test]
 fn test_no_arg_functions() {
-    TestCase::new()
-        .wit(
-            r#"
-            package test:noargs;
-            world noargs {
-                export get-answer: func() -> u32;
-                export get-message: func() -> string;
-                export get-flag: func() -> bool;
-            }
-        "#,
-        )
-        .script(
-            r#"
-            export function getAnswer() { return 42; }
-            export function getMessage() { return "hello"; }
-            export function getFlag() { return true; }
-        "#,
-        )
+    component()
         .expect_call("get-answer", vec![], Val::U32(42))
         .expect_call("get-message", vec![], Val::String("hello".into()))
         .expect_call("get-flag", vec![], Val::Bool(true))
-        .build()
-        .unwrap()
         .run();
 }
 
@@ -790,21 +490,8 @@ fn test_nested_lists() {
         Val::U32(5),
     ]);
 
-    TestCase::new()
-        .wit(
-            r#"
-            package test:nested;
-            world nested-lists {
-                export flatten: func(nested: list<list<u32>>) -> list<u32>;
-            }
-        "#,
-        )
-        .script(
-            "export function flatten(nested) { return nested.reduce((acc, arr) => acc.concat(arr), []); }",
-        )
+    component()
         .expect_call("flatten", vec![nested], expected)
-        .build()
-        .unwrap()
         .run();
 }
 
@@ -821,43 +508,23 @@ fn test_complex_record() {
         ("active".into(), Val::Bool(true)),
     ]);
 
-    TestCase::new()
-        .wit(r#"
-            package test:complex;
-            world complex-record {
-                record person { name: string, age: u32, active: bool }
-                export greet-person: func(p: person) -> string;
-                export make-person: func(name: string, age: u32) -> person;
-            }
-        "#)
-        .script(r#"
-            export function greetPerson(p) { return "Hello " + p.name + ", age " + p.age + ", active: " + p.active; }
-            export function makePerson(name, age) { return { name: name, age: age, active: true }; }
-        "#)
-        .expect_call("greet-person", vec![alice], Val::String("Hello Alice, age 30, active: true".into()))
-        .expect_call("make-person", vec![Val::String("Bob".into()), Val::U32(25)], bob)
-        .build().unwrap()
+    component()
+        .expect_call(
+            "greet-person",
+            vec![alice],
+            Val::String("Hello Alice, age 30, active: true".into()),
+        )
+        .expect_call(
+            "make-person",
+            vec![Val::String("Bob".into()), Val::U32(25)],
+            bob,
+        )
         .run();
 }
 
 #[test]
 fn test_list_of_strings() {
-    TestCase::new()
-        .wit(
-            r#"
-            package test:stringlists;
-            world string-lists {
-                export join-strings: func(parts: list<string>, sep: string) -> string;
-                export count-strings: func(parts: list<string>) -> u32;
-            }
-        "#,
-        )
-        .script(
-            r#"
-            export function joinStrings(parts, sep) { return parts.join(sep); }
-            export function countStrings(parts) { return parts.length; }
-        "#,
-        )
+    component()
         .expect_call(
             "join-strings",
             vec![
@@ -879,8 +546,6 @@ fn test_list_of_strings() {
             ])],
             Val::U32(3),
         )
-        .build()
-        .unwrap()
         .run();
 }
 
@@ -954,18 +619,7 @@ fn test_naming_conventions() {
 
 #[test]
 fn test_repeated_calls() {
-    let mut inst = TestCase::new()
-        .wit(
-            r#"
-            package test:repeated;
-            world repeated {
-                export hello: func() -> string;
-            }
-        "#,
-        )
-        .script(r#"export function hello() { return "hello"; }"#)
-        .build()
-        .unwrap();
+    let mut inst = component();
 
     for _ in 0..5 {
         assert_eq!(inst.call1("hello", &[]), Val::String("hello".into()));
@@ -983,30 +637,7 @@ fn test_deeply_nested_lists() {
         Val::List(vec![Val::List(vec![Val::U32(4), Val::U32(5), Val::U32(6)])]),
     ]);
 
-    TestCase::new()
-        .wit(
-            r#"
-            package test:deep-nesting;
-            world deep-nesting {
-                export deep-flatten: func(nested: list<list<list<u32>>>) -> list<u32>;
-            }
-        "#,
-        )
-        .script(
-            r#"
-            export function deepFlatten(nested) {
-                let result = [];
-                for (const mid of nested) {
-                    for (const inner of mid) {
-                        for (const v of inner) {
-                            result.push(v);
-                        }
-                    }
-                }
-                return result;
-            }
-        "#,
-        )
+    component()
         .expect_call(
             "deep-flatten",
             vec![input],
@@ -1019,8 +650,6 @@ fn test_deeply_nested_lists() {
                 Val::U32(6),
             ]),
         )
-        .build()
-        .unwrap()
         .run();
 }
 

@@ -1,4 +1,5 @@
 //! Shared test harness for componentize-qjs integration tests.
+//! Shared fixtures cache compiled components, never stores or live instances.
 #![allow(dead_code)]
 
 use std::fs;
@@ -135,37 +136,39 @@ impl TestCase {
 
     /// Build the component and return a live instance ready for calls.
     pub fn build(self) -> anyhow::Result<ComponentInstance> {
-        let dir = TempDir::new()?;
+        let component = self.compile()?;
+        ComponentInstance::from_component_with_stdin(
+            &component,
+            self.env_vars,
+            self.stdin,
+            self.expectations,
+        )
+    }
 
-        let wit_path = if let Some(ref wit_dir) = self.wit_dir {
-            wit_dir.clone()
-        } else {
-            let p = dir.path().join("test.wit");
-            fs::write(&p, self.wit.as_deref().unwrap())?;
-            p
-        };
-
-        let opts = ComponentizeOpts {
-            wit_path: &wit_path,
-            js_source: self.script.as_deref().unwrap(),
-            js_path: None,
-            module_root: None,
-            world_name: self.world_name.as_deref(),
-            stub_wasi: self.stub_wasi,
-            disable_gc: false,
-            runtime: Runtime::Default,
-        };
-
+    /// Compile a reusable synchronous fixture without instantiating its snapshot.
+    pub fn compile(&self) -> anyhow::Result<Component> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
 
-        let wasm = rt.block_on(componentize_qjs::componentize(&opts))?;
-        ComponentInstance::from_wasm_with_stdin(wasm, self.env_vars, self.stdin, self.expectations)
+        let wasm = rt.block_on(self.componentize())?;
+        Ok(Component::new(engine(), wasm)?)
     }
 
     /// Build the component and return an async-capable instance.
     pub async fn build_async(self) -> anyhow::Result<AsyncComponentInstance> {
+        let component = self.compile_async().await?;
+        AsyncComponentInstance::from_component_with_stdin(&component, self.env_vars, self.stdin)
+            .await
+    }
+
+    /// Compile a reusable fixture for the async test engine.
+    pub async fn compile_async(&self) -> anyhow::Result<Component> {
+        let wasm = self.componentize().await?;
+        Ok(Component::new(async_engine(), wasm)?)
+    }
+
+    async fn componentize(&self) -> anyhow::Result<Vec<u8>> {
         let dir = TempDir::new()?;
 
         let wit_path = if let Some(ref wit_dir) = self.wit_dir {
@@ -187,9 +190,7 @@ impl TestCase {
             runtime: Runtime::Default,
         };
 
-        let wasm = componentize_qjs::componentize(&opts).await?;
-
-        AsyncComponentInstance::from_wasm_with_stdin(wasm, self.env_vars, self.stdin).await
+        componentize_qjs::componentize(&opts).await
     }
 }
 
@@ -218,6 +219,21 @@ impl ComponentInstance {
     ) -> anyhow::Result<Self> {
         let engine = engine();
         let component = Component::new(engine, &wasm)?;
+        Self::from_component_with_stdin(&component, env_vars, stdin, expectations)
+    }
+
+    /// Instantiate shared compiled code with fresh JavaScript and WASI state.
+    pub fn from_component(component: &Component) -> anyhow::Result<Self> {
+        Self::from_component_with_stdin(component, vec![], None, vec![])
+    }
+
+    fn from_component_with_stdin(
+        component: &Component,
+        env_vars: Vec<(String, String)>,
+        stdin: Option<String>,
+        expectations: Vec<Expectation>,
+    ) -> anyhow::Result<Self> {
+        let engine = component.engine();
 
         let mut wasi_builder = WasiCtxBuilder::new();
         if !env_vars.is_empty() {
@@ -230,14 +246,15 @@ impl ComponentInstance {
         wasi_builder
             .stdin(MemoryInputPipe::new(stdin.unwrap_or_default()))
             .stdout(stdout.clone());
+
         let wasi = wasi_builder.build();
         let table = ResourceTable::new();
-        let mut store = Store::new(engine, WasiCtxState { wasi, table });
 
+        let mut store = Store::new(engine, WasiCtxState { wasi, table });
         let mut linker = Linker::new(engine);
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
 
-        let instance = linker.instantiate(&mut store, &component)?;
+        let instance = linker.instantiate(&mut store, component)?;
 
         Ok(ComponentInstance {
             store,
@@ -245,6 +262,16 @@ impl ComponentInstance {
             stdout,
             expectations,
         })
+    }
+
+    /// Register an expected call against this instance.
+    pub fn expect_call(mut self, name: &str, params: Vec<Val>, expected: Val) -> Self {
+        self.expectations.push(Expectation {
+            func_name: name.to_string(),
+            params,
+            expected,
+        });
+        self
     }
 
     /// Call an exported function with the given params and return results.
@@ -312,6 +339,20 @@ impl AsyncComponentInstance {
     ) -> anyhow::Result<Self> {
         let engine = async_engine();
         let component = Component::new(engine, &wasm)?;
+        Self::from_component_with_stdin(&component, env_vars, stdin).await
+    }
+
+    /// Instantiate shared compiled code with fresh JavaScript and WASI state.
+    pub async fn from_component(component: &Component) -> anyhow::Result<Self> {
+        Self::from_component_with_stdin(component, vec![], None).await
+    }
+
+    async fn from_component_with_stdin(
+        component: &Component,
+        env_vars: Vec<(String, String)>,
+        stdin: Option<String>,
+    ) -> anyhow::Result<Self> {
+        let engine = component.engine();
 
         let mut wasi_builder = WasiCtxBuilder::new();
         if !env_vars.is_empty() {
@@ -324,15 +365,16 @@ impl AsyncComponentInstance {
         wasi_builder
             .stdin(MemoryInputPipe::new(stdin.unwrap_or_default()))
             .stdout(stdout.clone());
+
         let wasi = wasi_builder.build();
         let table = ResourceTable::new();
-        let mut store = Store::new(engine, WasiCtxState { wasi, table });
 
+        let mut store = Store::new(engine, WasiCtxState { wasi, table });
         let mut linker = Linker::new(engine);
         wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
         wasmtime_wasi::p3::add_to_linker(&mut linker)?;
 
-        let instance = linker.instantiate_async(&mut store, &component).await?;
+        let instance = linker.instantiate_async(&mut store, component).await?;
 
         Ok(AsyncComponentInstance {
             store,

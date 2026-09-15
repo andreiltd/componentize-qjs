@@ -1,0 +1,5 @@
+# Keep runtime-cache source inputs identical across operating systems.
+/Cargo.toml text eol=lf
+/Cargo.lock text eol=lf
+/crates/core/build.rs text eol=lf
+/crates/runtime/** text=auto eol=lf
