@@ -1,4 +1,5 @@
 //! Async component model tests for componentize-qjs.
+//! Value conversions share compiled code; resource and metadata-order tests remain standalone.
 #![cfg(feature = "component-model-async")]
 
 mod common;
@@ -7,28 +8,62 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
-use common::{TestCase, WasiCtxState};
+use common::{AsyncComponentInstance, TestCase, WasiCtxState};
 use wasmtime::component::{
-    Destination, FutureConsumer, FutureReader, Source, StreamConsumer, StreamProducer,
+    Component, Destination, FutureConsumer, FutureReader, Source, StreamConsumer, StreamProducer,
     StreamReader, StreamResult, Val, VecBuffer,
 };
 use wasmtime::{AsContextMut, StoreContextMut};
 
+async fn component() -> AsyncComponentInstance {
+    static COMPONENT: tokio::sync::OnceCell<Component> = tokio::sync::OnceCell::const_new();
+    let component = COMPONENT
+        .get_or_init(|| async {
+            TestCase::new()
+                .wit(include_str!("wit/all/all-async.wit"))
+                .script(include_str!("js/all-async.js"))
+                .compile_async()
+                .await
+                .expect("failed to compile all-async fixture")
+        })
+        .await;
+
+    AsyncComponentInstance::from_component(component)
+        .await
+        .expect("failed to instantiate all-async fixture")
+}
+
+#[tokio::test]
+async fn test_all_async_instances_are_isolated() {
+    let mut first = component().await;
+    let mut second = component().await;
+    assert_eq!(
+        first.call1_async("next-count", &[]).await.unwrap(),
+        Val::U32(1)
+    );
+    assert_eq!(
+        first.call1_async("next-count", &[]).await.unwrap(),
+        Val::U32(2)
+    );
+    assert_eq!(
+        second.call1_async("next-count", &[]).await.unwrap(),
+        Val::U32(1)
+    );
+
+    drop(first);
+    assert_eq!(
+        component()
+            .await
+            .call1_async("next-count", &[])
+            .await
+            .unwrap(),
+        Val::U32(1)
+    );
+}
+
 #[tokio::test]
 async fn test_async_echo_u32() {
-    let mut instance = TestCase::new()
-        .wit(
-            r#"
-            package test:async-echo;
-            world async-echo {
-                export echo-u32: async func(x: u32) -> u32;
-            }
-            "#,
-        )
-        .script("export async function echoU32(x) { return x; }")
-        .build_async()
-        .await
-        .unwrap();
+    let mut instance = component().await;
 
     let result = instance
         .call1_async("echo-u32", &[Val::U32(42)])
@@ -39,19 +74,7 @@ async fn test_async_echo_u32() {
 
 #[tokio::test]
 async fn test_async_echo_string() {
-    let mut instance = TestCase::new()
-        .wit(
-            r#"
-            package test:async-echo;
-            world async-echo {
-                export echo-string: async func(s: string) -> string;
-            }
-            "#,
-        )
-        .script(r#"export async function echoString(s) { return s; }"#)
-        .build_async()
-        .await
-        .unwrap();
+    let mut instance = component().await;
 
     let result = instance
         .call1_async("echo-string", &[Val::String("hello async".into())])
@@ -62,19 +85,7 @@ async fn test_async_echo_string() {
 
 #[tokio::test]
 async fn test_async_echo_bool() {
-    let mut instance = TestCase::new()
-        .wit(
-            r#"
-            package test:async-echo;
-            world async-echo {
-                export echo-bool: async func(b: bool) -> bool;
-            }
-            "#,
-        )
-        .script("export async function echoBool(b) { return b; }")
-        .build_async()
-        .await
-        .unwrap();
+    let mut instance = component().await;
 
     let result = instance
         .call1_async("echo-bool", &[Val::Bool(true)])
@@ -85,19 +96,7 @@ async fn test_async_echo_bool() {
 
 #[tokio::test]
 async fn test_async_void_function() {
-    let mut instance = TestCase::new()
-        .wit(
-            r#"
-            package test:async-void;
-            world async-void {
-                export do-nothing: async func();
-            }
-            "#,
-        )
-        .script("export async function doNothing() { }")
-        .build_async()
-        .await
-        .unwrap();
+    let mut instance = component().await;
 
     let results = instance.call_async("do-nothing", &[], 0).await.unwrap();
     assert!(results.is_empty());
@@ -105,27 +104,7 @@ async fn test_async_void_function() {
 
 #[tokio::test]
 async fn test_async_with_await() {
-    let mut instance = TestCase::new()
-        .wit(
-            r#"
-            package test:async-await;
-            world async-await {
-                export delayed-echo: async func(x: u32) -> u32;
-            }
-            "#,
-        )
-        .script(
-            r#"
-            export async function delayedEcho(x) {
-                // Simulate async work with a resolved promise chain
-                await Promise.resolve();
-                return x + 1;
-            }
-            "#,
-        )
-        .build_async()
-        .await
-        .unwrap();
+    let mut instance = component().await;
 
     let result = instance
         .call1_async("delayed-echo", &[Val::U32(99)])
@@ -377,29 +356,7 @@ async fn test_async_method_only_resource_interface() {
 
 #[tokio::test]
 async fn test_async_echo_record() {
-    let mut instance = TestCase::new()
-        .wit(
-            r#"
-            package test:async-record;
-            world async-record {
-                record point {
-                    x: f64,
-                    y: f64,
-                }
-                export echo-point: async func(p: point) -> point;
-            }
-            "#,
-        )
-        .script(
-            r#"
-            export async function echoPoint(p) {
-                return { x: p.x * 2, y: p.y * 2 };
-            }
-            "#,
-        )
-        .build_async()
-        .await
-        .unwrap();
+    let mut instance = component().await;
 
     let input = Val::Record(vec![
         ("x".to_string(), Val::Float64(1.5)),
@@ -421,25 +378,7 @@ async fn test_async_echo_record() {
 
 #[tokio::test]
 async fn test_async_echo_option() {
-    let mut instance = TestCase::new()
-        .wit(
-            r#"
-            package test:async-option;
-            world async-option {
-                export echo-option: async func(x: option<u32>) -> option<u32>;
-            }
-            "#,
-        )
-        .script(
-            r#"
-            export async function echoOption(x) {
-                return x;
-            }
-            "#,
-        )
-        .build_async()
-        .await
-        .unwrap();
+    let mut instance = component().await;
 
     // Some case
     let result = instance
@@ -458,28 +397,7 @@ async fn test_async_echo_option() {
 
 #[tokio::test]
 async fn test_async_echo_result() {
-    let mut instance = TestCase::new()
-        .wit(
-            r#"
-            package test:async-result;
-            world async-result {
-                export safe-divide: async func(a: f64, b: f64) -> result<f64, string>;
-            }
-            "#,
-        )
-        .script(
-            r#"
-            export async function safeDivide(a, b) {
-                if (b === 0) {
-                    throw "division by zero";
-                }
-                return a / b;
-            }
-            "#,
-        )
-        .build_async()
-        .await
-        .unwrap();
+    let mut instance = component().await;
 
     // Ok case
     let result = instance
@@ -501,25 +419,7 @@ async fn test_async_echo_result() {
 
 #[tokio::test]
 async fn test_async_echo_list() {
-    let mut instance = TestCase::new()
-        .wit(
-            r#"
-            package test:async-list;
-            world async-list {
-                export double-list: async func(xs: list<u32>) -> list<u32>;
-            }
-            "#,
-        )
-        .script(
-            r#"
-            export async function doubleList(xs) {
-                return xs.map(x => x * 2);
-            }
-            "#,
-        )
-        .build_async()
-        .await
-        .unwrap();
+    let mut instance = component().await;
 
     let input = Val::List(vec![Val::U32(1), Val::U32(2), Val::U32(3)]);
     let result = instance.call1_async("double-list", &[input]).await.unwrap();
@@ -2036,30 +1936,7 @@ async fn test_future_build_with_input_output() {
 
 #[tokio::test]
 async fn test_async_multiple_awaits() {
-    let mut instance = TestCase::new()
-        .wit(
-            r#"
-            package test:multi-await;
-            world multi-await {
-                export chain: async func(x: u32) -> u32;
-            }
-            "#,
-        )
-        .script(
-            r#"
-            export async function chain(x) {
-                let result = x;
-                // Multiple promise resolutions to test the callback loop
-                result = await Promise.resolve(result + 1);
-                result = await Promise.resolve(result + 1);
-                result = await Promise.resolve(result + 1);
-                return result;
-            }
-            "#,
-        )
-        .build_async()
-        .await
-        .unwrap();
+    let mut instance = component().await;
 
     let result = instance
         .call1_async("chain", &[Val::U32(10)])
@@ -2109,28 +1986,7 @@ async fn test_async_error_in_promise() {
 
 #[tokio::test]
 async fn test_async_result_no_error_payload() {
-    let mut instance = TestCase::new()
-        .wit(
-            r#"
-            package test:async-result-no-err;
-            world async-result-no-err {
-                export validate: async func(x: u32) -> result<u32>;
-            }
-            "#,
-        )
-        .script(
-            r#"
-            export async function validate(x) {
-                if (x > 100) {
-                    throw undefined;
-                }
-                return x * 2;
-            }
-            "#,
-        )
-        .build_async()
-        .await
-        .unwrap();
+    let mut instance = component().await;
 
     let result = instance
         .call1_async("validate", &[Val::U32(50)])
@@ -2147,32 +2003,7 @@ async fn test_async_result_no_error_payload() {
 
 #[tokio::test]
 async fn test_async_variant_mixed_payloads() {
-    let mut instance = TestCase::new()
-        .wit(
-            r#"
-            package test:async-variant;
-            world async-variant {
-                variant response {
-                    empty,
-                    message(string),
-                    code(u32),
-                }
-                export process: async func(kind: u32) -> response;
-            }
-            "#,
-        )
-        .script(
-            r#"
-            export async function process(kind) {
-                if (kind === 0) return { tag: "empty" };
-                if (kind === 1) return { tag: "message", val: "hello" };
-                return { tag: "code", val: 42 };
-            }
-            "#,
-        )
-        .build_async()
-        .await
-        .unwrap();
+    let mut instance = component().await;
 
     let result = instance
         .call1_async("process", &[Val::U32(0)])

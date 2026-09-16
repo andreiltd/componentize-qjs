@@ -88,3 +88,6 @@ incremental = false
 debug = "line-tables-only"
 incremental = false
 opt-level = 3
+
+[profile.test.package.componentize-qjs-cli]
+opt-level = 1

@@ -1,0 +1,56 @@
+package test:all;
+
+world all {
+    record point { x: f64, y: f64 }
+    record person { name: string, age: u32, active: bool }
+    enum color { red, green, blue }
+    variant shape { circle(f64), none }
+    flags permissions { read, write, execute }
+
+    export greet: func() -> string;
+    export add: func(a: u32, b: u32) -> u32;
+    export add-u8: func(a: u8, b: u8) -> u8;
+    export add-s8: func(a: s8, b: s8) -> s8;
+    export add-u16: func(a: u16, b: u16) -> u16;
+    export add-s16: func(a: s16, b: s16) -> s16;
+    export add-u32: func(a: u32, b: u32) -> u32;
+    export add-s32: func(a: s32, b: s32) -> s32;
+    export add-u64: func(a: u64, b: u64) -> u64;
+    export add-s64: func(a: s64, b: s64) -> s64;
+    export add-f32: func(a: f32, b: f32) -> f32;
+    export add-f64: func(a: f64, b: f64) -> f64;
+    export negate: func(b: bool) -> bool;
+    export add-points: func(a: point, b: point) -> point;
+    export sum-list: func(nums: list<u32>) -> u32;
+    export scale-map: func(values: map<string, u32>) -> map<string, u32>;
+    export sum-map: func(values: map<string, list<u32>>) -> map<string, u32>;
+    export empty-map: func() -> map<string, u32>;
+    export bytes: func() -> list<u8>;
+    export empty: func() -> list<u8>;
+    export maybe-double: func(n: option<u32>) -> option<u32>;
+    export safe-div: func(a: u32, b: u32) -> result<u32, string>;
+    export take-string: func(s: string) -> u32;
+    export return-string: func() -> string;
+    export concat-strings: func(a: string, b: string) -> string;
+    export take-char: func(c: char) -> u32;
+    export return-char: func() -> char;
+    export identify-color: func(c: color) -> string;
+    export favorite-color: func() -> color;
+    export describe-shape: func(s: shape) -> string;
+    export make-circle: func(r: f64) -> shape;
+    export check-read: func(p: permissions) -> bool;
+    export read-write: func() -> permissions;
+    export swap: func(a: u32, b: u32) -> tuple<u32, u32>;
+    export sum-ten: func(a1: u32, a2: u32, a3: u32, a4: u32, a5: u32, a6: u32, a7: u32, a8: u32, a9: u32, a10: u32) -> u32;
+    export get-answer: func() -> u32;
+    export get-message: func() -> string;
+    export get-flag: func() -> bool;
+    export flatten: func(nested: list<list<u32>>) -> list<u32>;
+    export greet-person: func(p: person) -> string;
+    export make-person: func(name: string, age: u32) -> person;
+    export join-strings: func(parts: list<string>, sep: string) -> string;
+    export count-strings: func(parts: list<string>) -> u32;
+    export hello: func() -> string;
+    export deep-flatten: func(nested: list<list<list<u32>>>) -> list<u32>;
+    export next-count: func() -> u32;
+}
