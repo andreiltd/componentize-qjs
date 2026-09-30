@@ -2,6 +2,8 @@ mod abi;
 mod bindings;
 mod buffer;
 mod call;
+mod endpoint;
+mod exports;
 mod futures;
 mod interpreter;
 mod module;
@@ -18,7 +20,7 @@ use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::hash_map::DefaultHasher;
 
 use rquickjs::runtime::UserDataGuard;
-use rquickjs::{Context, JsLifetime, Persistent, Runtime, Value, function};
+use rquickjs::{Context, JsLifetime, Persistent, Runtime, Value};
 use smallvec::SmallVec;
 use task::TaskState;
 use wit_dylib_ffi::Wit;
@@ -39,7 +41,7 @@ pub(crate) type DetIndexMap<K, V> = indexmap::IndexMap<K, V, DetHasher>;
 mod init {
     wit_bindgen::generate!({
         world: "init",
-        path: "wit/init.wit",
+        path: "../core/wit/init.wit",
         generate_all,
         disable_run_ctors_once_workaround: true,
     });
@@ -243,8 +245,19 @@ impl QjsCallContext {
         self.pop_persistent().restore(ctx).expect("stack underflow")
     }
 
-    pub(crate) fn shift_value<'js>(&mut self, ctx: &rquickjs::Ctx<'js>) -> Value<'js> {
-        self.stack.remove(0).restore(ctx).expect("stack underflow")
+    /// Drain canonical arguments in call order, retaining storage for the result.
+    pub(crate) fn drain_values(
+        &mut self,
+    ) -> impl ExactSizeIterator<Item = Persistent<Value<'static>>> {
+        self.stack.drain(..)
+    }
+
+    /// Take canonical arguments in call order without allocating another vector.
+    ///
+    /// The iterator does not borrow this context, so async dispatch can retain its
+    /// resource guards in the active task before looking up JavaScript exports.
+    pub(crate) fn take_values(&mut self) -> std::vec::IntoIter<Persistent<Value<'static>>> {
+        std::mem::take(&mut self.stack).into_iter()
     }
 
     pub(crate) fn pop_persistent(&mut self) -> Persistent<Value<'static>> {
@@ -262,16 +275,6 @@ impl QjsCallContext {
         self.maybe_pop_persistent()
             .map(|persistent| persistent.restore(ctx))
             .transpose()
-    }
-
-    pub(crate) fn stack_into_args<'js>(&mut self, ctx: &rquickjs::Ctx<'js>) -> function::Args<'js> {
-        let mut args = function::Args::new(ctx.clone(), self.stack.len());
-        for p in self.stack.drain(..) {
-            p.restore(ctx)
-                .and_then(|val| args.push_arg(val))
-                .expect("Failed to restore arg");
-        }
-        args
     }
 }
 

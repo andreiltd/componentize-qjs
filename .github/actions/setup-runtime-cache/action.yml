@@ -9,17 +9,10 @@ runs:
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: crates/core/prebuilt
-        key: runtime-wasm-v3-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/runtime/**', 'crates/core/build.rs') }}
+        key: runtime-wasm-v4-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/runtime/**', 'crates/core/build.rs', 'crates/core/build/**', 'crates/core/wit/**', 'xtask/**') }}
         enableCrossOsArchive: true
 
     - name: Build runtime wasm
       if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
-      run: |
-        cargo build --locked -p componentize-qjs
-        mkdir -p crates/core/prebuilt
-        for f in runtime.wasm runtime-opt-size.wasm runtime-sync.wasm runtime-opt-size-sync.wasm; do
-          src=$(find target -path "*/out/$f" -type f | sort | tail -n 1)
-          test -n "$src" || { echo "ERROR: built runtime $f not found"; exit 1; }
-          cp "$src" "crates/core/prebuilt/$f"
-        done
+      run: cargo run --locked -p xtask -- --output crates/core/prebuilt

@@ -1,7 +1,6 @@
 //! WIT to/from JS binding registration.
 use heck::{ToLowerCamelCase, ToUpperCamelCase};
 use rquickjs::Persistent;
-use rquickjs::function;
 use rquickjs::function::{Constructor, Rest, This};
 use rquickjs::{Ctx, Function, Object, Value};
 use smallvec::SmallVec;
@@ -13,7 +12,6 @@ use crate::resources::{imported_resource_prototype, validate_imported_resource};
 use crate::result::ResultBoundary;
 use crate::streams::{make_stream, register_stream_classes};
 use crate::task::Pending;
-use crate::trivia::{fn_lookup, iface_lookup};
 use crate::wit_imports::{FuncKind, WitInterface, classify, find_resource};
 use crate::{DetHashMap, DetHashSet, DetIndexMap, QjsCallContext, coerce_fn};
 
@@ -23,7 +21,7 @@ pub(crate) fn register(ctx: &rquickjs::Ctx<'_>, wit_def: Wit) -> rquickjs::Resul
     register_future_classes(ctx)?;
     register_resource_classes(ctx, wit_def)?;
     register_root_imports(ctx)?;
-    register_cqjs_namespace(ctx, wit_def)?;
+    register_cqjs_namespace(ctx)?;
     Ok(())
 }
 
@@ -279,177 +277,6 @@ fn call_import<'js>(
     }
 }
 
-/// Build the `asyncExports` object for the `__cqjs` namespace.
-///
-/// Each wrapper calls the user's export function or resource member, then
-/// chains `.then()` to signal `task_return` back to the host.
-fn build_async_exports<'js>(
-    ctx: &rquickjs::Ctx<'js>,
-    wit_def: Wit,
-) -> rquickjs::Result<rquickjs::Object<'js>> {
-    let exports = rquickjs::Object::new(ctx.clone())?;
-    // Insertion-ordered so the resulting object's property order is deterministic
-    // (and follows WIT declaration order) for a reproducible Wizer snapshot.
-    let mut iface_objs: DetIndexMap<String, rquickjs::Object<'_>> = DetIndexMap::default();
-
-    for (func_index, func) in wit_def.iter_export_funcs().enumerate() {
-        let wrapper_name = func.name().to_lower_camel_case();
-        let func_name = func.name();
-        let kind = classify(func_name);
-        let iface_name = func
-            .interface()
-            .map(|interface| iface_lookup(ctx, interface).to_string());
-
-        let iface = iface_name.clone();
-
-        let wrapper = Function::new(
-            ctx.clone(),
-            coerce_fn(move |ctx: Ctx<'_>, args: Rest<Value<'_>>| {
-                let exports = ctx.user_module().exports(&ctx)?;
-                let export_scope = || {
-                    if let Some(ref iface) = iface {
-                        exports.get(iface.as_str())
-                    } else {
-                        Ok(exports.clone())
-                    }
-                };
-
-                let mut values = args.0;
-                let (user_fn, this): (Function<'_>, Option<Value<'_>>) = match kind {
-                    FuncKind::Freestanding => {
-                        let scope: Object = export_scope()?;
-                        (scope.get(fn_lookup(&ctx, func_name))?, None)
-                    }
-                    FuncKind::Constructor { .. } => {
-                        return Err(rquickjs::Exception::throw_type(
-                            &ctx,
-                            "resource constructors cannot be async",
-                        ));
-                    }
-                    FuncKind::Method { method, .. } => {
-                        if values.is_empty() {
-                            return Err(rquickjs::Exception::throw_type(
-                                &ctx,
-                                "async resource method receiver is missing",
-                            ));
-                        }
-                        let receiver = values.remove(0);
-                        let receiver_obj = receiver.as_object().ok_or_else(|| {
-                            rquickjs::Exception::throw_type(
-                                &ctx,
-                                "async resource method receiver is not an object",
-                            )
-                        })?;
-                        let method: Function = receiver_obj.get(fn_lookup(&ctx, method))?;
-                        (method, Some(receiver))
-                    }
-                    FuncKind::Static { resource, method } => {
-                        let scope: Object = export_scope()?;
-                        let class_name = resource.to_upper_camel_case();
-                        let class: Object = scope.get(class_name.as_str())?;
-                        let method: Function = class.get(fn_lookup(&ctx, method))?;
-                        (method, Some(class.into_value()))
-                    }
-                };
-
-                let mut js_args = function::Args::new(ctx.clone(), values.len());
-                for arg in values {
-                    js_args.push_arg(arg)?;
-                }
-                if let Some(this) = this {
-                    js_args.this(this)?;
-                }
-                let result = user_fn.call_arg::<Value>(js_args)?;
-
-                let promise_obj = result
-                    .as_object()
-                    .ok_or_else(|| rquickjs::Error::new_from_js("value", "promise"))?;
-
-                let then_fn: Function = promise_obj.get("then")?;
-
-                let then_cb = Function::new(
-                    ctx.clone(),
-                    coerce_fn(move |ctx: Ctx<'_>, args: Rest<Value<'_>>| {
-                        if ctx.task().is_cancelling() {
-                            return Ok(Value::new_undefined(ctx));
-                        }
-                        let value = args
-                            .0
-                            .into_iter()
-                            .next()
-                            .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
-
-                        let func = ctx.wit().export_func(func_index);
-                        let boundary = ResultBoundary::new(func.result());
-                        let mut call = QjsCallContext::default();
-
-                        let value = boundary
-                            .lower_value(&ctx, value)
-                            .expect("Call failed 'async export'");
-
-                        if let Some(value) = value {
-                            call.push_value(&ctx, value);
-                        }
-                        ctx.task().finish_export();
-                        func.call_task_return(&mut call);
-                        call.complete_transfers(1);
-                        Ok(Value::new_undefined(ctx))
-                    }),
-                )?;
-
-                let catch_cb = Function::new(
-                    ctx.clone(),
-                    coerce_fn(move |ctx: Ctx<'_>, args: Rest<Value<'_>>| {
-                        if ctx.task().is_cancelling() {
-                            return Ok(Value::new_undefined(ctx));
-                        }
-                        let reason = args
-                            .0
-                            .into_iter()
-                            .next()
-                            .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
-                        let func = ctx.wit().export_func(func_index);
-                        let boundary = ResultBoundary::new(func.result());
-                        let mut call = QjsCallContext::default();
-                        let value = boundary
-                            .lower_throw(&ctx, reason)
-                            .expect("Call failed 'async export'");
-
-                        if let Some(value) = value {
-                            call.push_value(&ctx, value);
-                        }
-
-                        ctx.task().finish_export();
-                        func.call_task_return(&mut call);
-                        call.complete_transfers(1);
-                        Ok(Value::new_undefined(ctx))
-                    }),
-                )?;
-
-                let mut call_args = function::Args::new(ctx.clone(), 2);
-                call_args.this(result)?;
-                call_args.push_arg(then_cb)?;
-                call_args.push_arg(catch_cb)?;
-                then_fn.call_arg(call_args)
-            }),
-        )?;
-
-        let target = match &iface_name {
-            Some(iface) => iface_objs
-                .entry(iface.clone())
-                .or_insert_with(|| rquickjs::Object::new(ctx.clone()).unwrap()),
-            None => &exports,
-        };
-        target.set(wrapper_name.as_str(), wrapper)?;
-    }
-
-    for (name, obj) in iface_objs {
-        exports.set(name.as_str(), obj)?;
-    }
-
-    Ok(exports)
-}
-
 /// Register the `__cqjs` namespace object on globalThis.
 ///
 /// Consolidates all internal bridge globals into a single frozen object:
@@ -457,8 +284,7 @@ fn build_async_exports<'js>(
 /// - `makeFuture(typeIndex)` — create a future pair
 /// - `getMemoryUsage()` — return QuickJS memory statistics
 /// - `runGc()` — trigger QuickJS garbage collection
-/// - `asyncExports` — object containing async export wrappers
-fn register_cqjs_namespace(ctx: &rquickjs::Ctx<'_>, wit_def: Wit) -> rquickjs::Result<()> {
+fn register_cqjs_namespace(ctx: &rquickjs::Ctx<'_>) -> rquickjs::Result<()> {
     let ns = rquickjs::Object::new(ctx.clone())?;
 
     // Stream/future factories
@@ -509,10 +335,6 @@ fn register_cqjs_namespace(ctx: &rquickjs::Ctx<'_>, wit_def: Wit) -> rquickjs::R
             ),
         )?,
     )?;
-
-    // Async export wrappers
-    let async_exports = build_async_exports(ctx, wit_def)?;
-    ns.set("asyncExports", async_exports)?;
 
     // Freeze and install on globalThis
     let object_ctor: rquickjs::Object = ctx.globals().get("Object")?;

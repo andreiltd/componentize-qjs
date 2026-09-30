@@ -10,8 +10,8 @@ use std::task::{Context, Poll};
 
 use common::{AsyncComponentInstance, TestCase, WasiCtxState};
 use wasmtime::component::{
-    Component, Destination, FutureConsumer, FutureReader, Source, StreamConsumer, StreamProducer,
-    StreamReader, StreamResult, Val, VecBuffer,
+    Component, Destination, FutureConsumer, FutureReader, Lift, Source, StreamConsumer,
+    StreamProducer, StreamReader, StreamResult, Val, VecBuffer,
 };
 use wasmtime::{AsContextMut, StoreContextMut};
 
@@ -111,6 +111,144 @@ async fn test_async_with_await() {
         .await
         .unwrap();
     assert_eq!(result, Val::U32(100));
+}
+
+/// Export getters can start async operations before the function is invoked.
+#[tokio::test]
+async fn test_async_export_lookup_has_active_task() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:async-lookup;
+
+            interface api {
+                compute: async func(left: u32, right: u32) -> u32;
+            }
+
+            world async-lookup {
+                export api;
+                export unused-future: async func() -> future<u32>;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            export const api = {
+                get compute() {
+                    if ("asyncExports" in __cqjs) {
+                        throw new Error("legacy async wrapper table is still installed");
+                    }
+
+                    const { readable, writable } = wit.Future();
+                    const read = readable.read();
+                    const write = writable.write(1);
+
+                    return async (left, right) => {
+                        const offset = await read;
+
+                        if (!await write) throw new Error("future write was not consumed");
+
+                        readable.drop();
+                        writable.drop();
+                        return left * 10 + right + offset;
+                    };
+                },
+            };
+
+            export async function unusedFuture() {
+                throw new Error("not called");
+            }
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    let (component, store) = instance.parts();
+    let api = component
+        .get_export_index(&mut *store, None, "test:async-lookup/api")
+        .expect("api interface not found");
+    let compute = component
+        .get_export_index(&mut *store, Some(&api), "compute")
+        .expect("compute export not found");
+    let compute = component.get_func(&mut *store, compute).unwrap();
+
+    for (left, right, expected) in [(4, 2, 43), (8, 3, 84)] {
+        let mut results = [Val::Bool(false)];
+
+        compute
+            .call_async(
+                &mut *store,
+                &[Val::U32(left), Val::U32(right)],
+                &mut results,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(results[0], Val::U32(expected));
+    }
+}
+
+/// Direct dispatch preserves thenable receivers and synchronous settlement.
+#[tokio::test]
+async fn test_async_export_thenables() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:async-thenables;
+
+            world async-thenables {
+                export settle: async func(value: u32, fail: bool) -> result<u32, string>;
+                export settle-void: async func();
+            }
+            "#,
+        )
+        .script(
+            r#"
+            export function settle(value, fail) {
+                return {
+                    value,
+                    fail,
+                    then(resolve, reject) {
+                        if (this.fail) {
+                            reject("expected failure");
+                        } else {
+                            resolve(this.value);
+                        }
+                    },
+                };
+            }
+
+            export function settleVoid() {
+                return { then(resolve) { resolve(); } };
+            }
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    for fail in [false, true, false] {
+        let result = instance
+            .call1_async("settle", &[Val::U32(42), Val::Bool(fail)])
+            .await
+            .unwrap();
+        let expected = if fail {
+            Err(Some(Box::new(Val::String("expected failure".into()))))
+        } else {
+            Ok(Some(Box::new(Val::U32(42))))
+        };
+
+        assert_eq!(result, Val::Result(expected));
+    }
+
+    assert!(
+        instance
+            .call_async("settle-void", &[], 0)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -1431,6 +1569,133 @@ async fn test_stream_write_all_rejects_invalid_or_stalled_writes() {
     );
 }
 
+/// Exercise native retry and completion behavior with controlled JavaScript writes.
+#[tokio::test]
+async fn test_stream_helpers_preserve_completion_shapes() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:stream-helper-completions;
+            world stream-helper-completions {
+                export verify-helpers: async func();
+                export unused-stream: async func() -> stream<u8>;
+            }
+            "#,
+        )
+        .script(include_str!("js/stream-helpers.js"))
+        .build_async()
+        .await
+        .unwrap();
+
+    instance.call_async("verify-helpers", &[], 0).await.unwrap();
+}
+
+/// Preserve iterable completion promises and distinguish batches from tuple values.
+///
+/// Tuple items use a host consumer because Wasmtime does not support
+/// intra-component stream copies with non-numeric payloads.
+#[tokio::test]
+async fn test_stream_iterable_item_completion_shapes() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:stream-iterable-item;
+            world stream-iterable-item {
+                export bytes: async func() -> list<u8>;
+                export tuple-item: async func() -> stream<tuple<u8, u8>>;
+                export tuple-completed: async func() -> bool;
+                export unused-bytes: async func() -> stream<u8>;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            let tupleCompletion;
+
+            export async function bytes() {
+                const { readable, writable } = wit.Stream(wit.Stream.U8);
+                const empty = writable.writeIterableItem(new Uint8Array());
+                if (!(empty instanceof Promise) || await empty !== true) {
+                    throw new Error("empty batch must resolve true");
+                }
+
+                const read = readable.read(2);
+                const written = writable.writeIterableItem(new Uint8Array([6, 7]));
+                if (!(written instanceof Promise) || await written !== true) {
+                    throw new Error("complete batch must resolve true");
+                }
+
+                const data = await read;
+                writable.drop();
+                readable.drop();
+
+                const closed = writable.writeIterableItem([1, 2]);
+                if (!(closed instanceof Promise) || await closed !== false) {
+                    throw new Error("closed stream must resolve false");
+                }
+
+                return Array.from(data);
+            }
+
+            export async function tupleItem() {
+                const { readable, writable } = wit.Stream(wit.Stream.TUPLE_U8_U8);
+                tupleCompletion = writable.writeIterableItem([1, 2]).then(complete => {
+                    writable.drop();
+                    return complete;
+                });
+                return readable;
+            }
+
+            export async function tupleCompleted() {
+                return await tupleCompletion;
+            }
+
+            export async function unusedBytes() {
+                throw new Error("type declaration only");
+            }
+
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        instance.call1_async("bytes", &[]).await.unwrap(),
+        Val::List(vec![Val::U8(6), Val::U8(7)])
+    );
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let (inst, store) = instance.parts();
+    let func = inst
+        .get_typed_func::<(), (StreamReader<(u8, u8)>,)>(&mut *store, "tuple-item")
+        .unwrap();
+    let (reader,) = func.call_async(&mut *store, ()).await.unwrap();
+    reader
+        .pipe(
+            &mut *store,
+            StreamCollector {
+                values: Arc::clone(&output),
+                expected: 1,
+            },
+        )
+        .unwrap();
+    store
+        .as_context_mut()
+        .run_concurrent(async |_| {
+            while output.lock().unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(&*output.lock().unwrap(), &[(1, 2)]);
+    assert_eq!(
+        instance.call1_async("tuple-completed", &[]).await.unwrap(),
+        Val::Bool(true)
+    );
+}
+
 #[tokio::test]
 async fn test_stream_write_uint32_array() {
     // Verify the typed-array fast path handles wider primitive element types
@@ -1582,7 +1847,7 @@ async fn test_blocked_stream_write_keeps_lowered_payload_alive() {
     reader
         .pipe(
             &mut *store,
-            StringStreamConsumer {
+            StreamCollector {
                 values: Arc::clone(&values),
                 expected: 1,
             },
@@ -1705,7 +1970,7 @@ async fn test_stream_async_iterable_round_trip_infers_type() {
     reader
         .pipe(
             &mut *store,
-            StringStreamConsumer {
+            StreamCollector {
                 values: Arc::clone(&output),
                 expected: 2,
             },
@@ -1762,7 +2027,7 @@ async fn test_stream_async_iterable_batches_byte_arrays() {
     reader
         .pipe(
             &mut *store,
-            ByteStreamConsumer {
+            StreamCollector {
                 values: Arc::clone(&output),
                 expected: 5,
             },
@@ -1843,6 +2108,78 @@ async fn test_future_create_and_return_u32() {
 
     let results = instance.call_async("make-future", &[], 1).await.unwrap();
     assert_eq!(results.len(), 1);
+}
+
+/// Immediate, callback, and cancelled reads must share promise/ownership semantics.
+#[tokio::test]
+async fn test_future_read_completion_and_retry_paths() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:future-completion;
+            world future-completion {
+                export exercise: async func() -> list<u32>;
+                export unused-future: async func() -> future<u32>;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            export async function exercise() {
+                const values = [];
+
+                for (const readFirst of [true, false]) {
+                    const { readable, writable } = wit.Future();
+                    let read, write;
+
+                    if (readFirst) {
+                        read = readable.read();
+                        write = writable.write(10);
+                    } else {
+                        write = writable.write(20);
+                        read = readable.read();
+                    }
+
+                    if (read !== readable.read()) throw new Error("read promise not cached");
+                    values.push(await read);
+                    if (!await write) throw new Error("write was not consumed");
+                    if (read !== readable.read()) throw new Error("completed promise not cached");
+                    readable.drop();
+                    writable.drop();
+                }
+
+                const { readable, writable } = wit.Future();
+                const cancelled = readable.read();
+                const cancellation = cancelled.catch(reason => String(reason));
+                readable.cancelRead();
+
+                if (await cancellation !== "future read cancelled") {
+                    throw new Error("cancellation did not reject the original read");
+                }
+
+                const retry = readable.read();
+                if (retry === cancelled) throw new Error("cancelled promise was reused");
+                if (!await writable.write(30)) throw new Error("retry write was not consumed");
+                values.push(await retry);
+                readable.drop();
+                writable.drop();
+
+                return values;
+            }
+
+            export async function unusedFuture() {
+                throw new Error("not called");
+            }
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        instance.call1_async("exercise", &[]).await.unwrap(),
+        Val::List(vec![Val::U32(10), Val::U32(20), Val::U32(30)])
+    );
 }
 
 #[tokio::test]
@@ -1981,7 +2318,10 @@ async fn test_async_error_in_promise() {
         .call_async("might-fail", &[Val::Bool(true)], 1)
         .await;
 
-    assert!(result.is_ok() || result.is_err());
+    assert!(
+        result.is_err(),
+        "rejected async export unexpectedly succeeded"
+    );
 }
 
 #[tokio::test]
@@ -2070,14 +2410,16 @@ impl<T: Send + Sync + 'static> StreamProducer<WasiCtxState> for EmptyProducer<T>
     }
 }
 
-struct StringStreamConsumer {
-    values: Arc<Mutex<Vec<String>>>,
+/// Collect typed stream items in host memory until the expected count is reached.
+struct StreamCollector<T> {
+    values: Arc<Mutex<Vec<T>>>,
     expected: usize,
 }
 
-impl StreamConsumer<WasiCtxState> for StringStreamConsumer {
-    type Item = String;
+impl<T: Lift + Send + 'static> StreamConsumer<WasiCtxState> for StreamCollector<T> {
+    type Item = T;
 
+    /// Lift available values and close the consumer once its target count is met.
     fn poll_consume(
         self: Pin<&mut Self>,
         _cx: &mut Context<'_>,
@@ -2088,33 +2430,7 @@ impl StreamConsumer<WasiCtxState> for StringStreamConsumer {
         let mut values = Vec::with_capacity(source.remaining(&mut store));
         source.read(&mut store, &mut values)?;
         self.values.lock().unwrap().extend(values);
-        let result = if self.values.lock().unwrap().len() >= self.expected {
-            StreamResult::Dropped
-        } else {
-            StreamResult::Completed
-        };
-        Poll::Ready(Ok(result))
-    }
-}
 
-struct ByteStreamConsumer {
-    values: Arc<Mutex<Vec<u8>>>,
-    expected: usize,
-}
-
-impl StreamConsumer<WasiCtxState> for ByteStreamConsumer {
-    type Item = u8;
-
-    fn poll_consume(
-        self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-        mut store: StoreContextMut<'_, WasiCtxState>,
-        mut source: Source<'_, Self::Item>,
-        _finish: bool,
-    ) -> Poll<wasmtime::Result<StreamResult>> {
-        let mut values = Vec::with_capacity(source.remaining(&mut store));
-        source.read(&mut store, &mut values)?;
-        self.values.lock().unwrap().extend(values);
         let result = if self.values.lock().unwrap().len() >= self.expected {
             StreamResult::Dropped
         } else {

@@ -122,35 +122,9 @@ impl<'a> EmitContext<'a> {
         }
 
         if name == "Stream" {
-            self.multiline(
-                r#"wit.Stream.from = function(iterable, type) {
-                      const { readable, writable } = wit.Stream(type);
-                      const completion = (async () => {
-                        try {
-                          for await (const item of iterable) {
-                            if (!await writable.writeIterableItem(item)) break;
-                          }
-                        } finally {
-                          writable.drop();
-                        }
-                      })();
-                      return { readable, completion };
-                    };"#,
-            );
+            self.multiline(include_str!("js/stream-from.js"));
         } else {
-            self.multiline(
-                r#"wit.Future.from = function(value, type) {
-                      const { readable, writable } = wit.Future(type);
-                      const completion = (async () => {
-                        try {
-                          await writable.write(await value);
-                        } finally {
-                          writable.drop();
-                        }
-                      })();
-                      return { readable, completion };
-                    };"#,
-            );
+            self.multiline(include_str!("js/future-from.js"));
         }
     }
 

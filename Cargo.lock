@@ -468,6 +468,7 @@ dependencies = [
  "heck",
  "indexmap",
  "num_enum",
+ "quickcheck",
  "rquickjs",
  "smallvec",
  "wit-bindgen 0.61.1",
@@ -4165,6 +4166,18 @@ checksum = "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
 dependencies = [
  "libc",
  "rustix",
+]
+
+[[package]]
+name = "xtask"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "flate2",
+ "glob",
+ "tar",
+ "ureq",
 ]
 
 [[package]]

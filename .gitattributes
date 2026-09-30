@@ -2,4 +2,7 @@
 /Cargo.toml text eol=lf
 /Cargo.lock text eol=lf
 /crates/core/build.rs text eol=lf
+/crates/core/build/** text=auto eol=lf
+/crates/core/wit/** text=auto eol=lf
 /crates/runtime/** text=auto eol=lf
+/xtask/** text=auto eol=lf

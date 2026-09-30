@@ -64,29 +64,20 @@ Trigger a quickjs garbage collection cycle.
 
 - Returns : `undefined`
 
-### `__cqjs.asyncExports`
+## Export Dispatch
 
-An object containing wrapper functions for async WIT exports. Each wrapper
-calls the user's export function and chains `.then()` to signal `task_return`
-back to the component model host.
-
-Structure mirrors the WIT export layout:
-
-```js
-__cqjs.asyncExports = {
-  myFunc: Function,          // root-scope async export
-  myInterface: {             // interface-scoped exports
-    anotherFunc: Function,
-  },
-};
-```
+`crates/runtime/src/exports.rs` resolves and invokes both sync and async exports.
+Resource methods take their receiver from the first canonical argument and
+preserve the remaining argument order. Async calls activate their task before
+export lookup, then attach fulfillment/rejection callbacks to signal
+`task.return`; no JavaScript wrapper table is created.
 
 ---
 
 ## `globalThis.wit` : Public Stream/Future API
 
 The user-facing API for creating streams and futures from JavaScript.
-Installed by the generated JS shim (see `src/codegen.rs`).
+Installed by the generated JS shim (see `crates/core/src/codegen.rs`).
 
 ### `wit.Stream(type)`
 

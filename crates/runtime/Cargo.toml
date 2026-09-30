@@ -20,6 +20,9 @@ num_enum = { version = "0.7", default-features = false }
 smallvec = "1"
 indexmap = { version = "2", default-features = false }
 
+[dev-dependencies]
+quickcheck = "1"
+
 [features]
 default = ["component-model-async"]
 component-model-async = []

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/core", "crates/runtime", "napi"]
+members = ["crates/core", "crates/runtime", "napi", "xtask"]
 default-members = [".", "napi"]
 resolver = "2"
 
@@ -16,6 +16,10 @@ componentize-qjs = { path = "crates/core", version = "0.4.5", default-features =
 componentize-qjs-cli = { path = ".", version = "0.4.5", default-features = false }
 anyhow = "1.0"
 clap = { version = "4", features = ["derive"] }
+flate2 = "1.1"
+glob = "0.3"
+tar = "0.4"
+ureq = "3"
 tokio = { version = "1", default-features = false, features = ["rt", "macros"] }
 wasmtime = { version = "47", features = ["component-model", "async"] }
 wasmtime-wasi = { version = "47", default-features = false, features = ["p2", "p3"] }
