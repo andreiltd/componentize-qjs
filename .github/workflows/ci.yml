@@ -40,10 +40,13 @@ jobs:
         uses: ./.github/actions/setup-runtime-cache
 
       - name: Check formatting
-        run: cargo fmt --check
+        run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --all-features -- -D warnings
+        run: cargo clippy --workspace --all-features -- -D warnings
+
+      - name: Runtime and build-tool unit tests
+        run: cargo test --locked -p componentize-qjs-runtime -p xtask
 
   build-test:
     name: Build and test (${{ matrix.os }})
@@ -77,6 +80,10 @@ jobs:
 
       - name: Setup runtime wasm cache
         uses: ./.github/actions/setup-runtime-cache
+
+      - name: Build Windows runtime from source
+        if: runner.os == 'Windows'
+        run: cargo run --locked -p xtask -- --sync-only --output target/runtime-source-check
 
       - name: Run tests
         run: cargo test -p componentize-qjs-cli

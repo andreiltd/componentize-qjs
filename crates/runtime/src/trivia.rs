@@ -1,9 +1,25 @@
 use crate::CtxExt;
+use crate::endpoint::EndpointError;
 use crate::with_ctx;
 
 use heck::ToLowerCamelCase;
 use rquickjs::{Atom, Function, Object, Persistent, Symbol};
 use rquickjs::{Result, Value, function::Rest};
+
+impl From<EndpointError> for rquickjs::Error {
+    /// Preserve JS-facing errors without coupling endpoint state to QuickJS.
+    fn from(error: EndpointError) -> Self {
+        let (from, message) = match error {
+            EndpointError::NotIdle(kind) => (kind, "operation requires an idle endpoint"),
+            EndpointError::WrongType(kind) => (kind, "matching WIT type"),
+            EndpointError::InFlight(kind) => (kind, "cancel and await before dropping"),
+            EndpointError::NotCancellable(kind) => (kind, "cancel without active operation"),
+            EndpointError::Dropped => ("object", "already dropped"),
+        };
+
+        Self::new_from_js(from, message)
+    }
+}
 
 /// Coerce closure lifetimes so the returned `Value<'js>` gets the same
 /// lifetime as the `Ctx<'js>` argument.

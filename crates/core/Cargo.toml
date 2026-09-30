@@ -12,6 +12,7 @@ include = [
     "src/**/*",
     "wit/**/*",
     "build.rs",
+    "build/**/*",
     "../../README.md",
     "prebuilt/runtime.wasm",
     "prebuilt/runtime.wasm.cdx.json",
@@ -49,10 +50,10 @@ tempfile = "3"
 
 [build-dependencies]
 anyhow.workspace = true
-flate2 = "1.1"
-glob = "0.3"
-tar = "0.4"
-ureq = "3"
+flate2.workspace = true
+glob.workspace = true
+tar.workspace = true
+ureq.workspace = true
 
 [features]
 default = ["component-model-async"]

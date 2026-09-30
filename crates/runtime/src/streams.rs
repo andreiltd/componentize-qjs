@@ -4,19 +4,21 @@
 //! `StreamWritable`) whose state lives on the Rust side.  Methods on the
 //! shared prototype avoid per-instance closure allocations.
 #![allow(unsafe_code)]
+
+mod helpers;
+
 use crate::CtxExt;
-use crate::abi::{CopyEnd, CopyResult, CopyState, is_blocked_raw, unpack_copy_result};
+use crate::abi::{CopyResult, is_blocked_raw, unpack_copy_result};
 use crate::buffer::BufferGuard;
+use crate::endpoint::CopyEnd;
 use crate::task::Pending;
-use crate::typed_array::{copy_typed_array_as, typed_array_len_as};
+use crate::typed_array::copy_typed_array_as;
 use crate::{QjsCallContext, resolve_promise, symbol_dispose, with_ctx};
 
 use rquickjs::JsLifetime;
 use rquickjs::class::{Class, JsClass, Trace};
-use rquickjs::function::{self, Opt, Rest, This};
+use rquickjs::function::{self, Opt, This};
 use rquickjs::{Ctx, Function, Object, Persistent, Symbol, Value};
-
-use std::cell::Cell;
 
 const BYTE_ITERATOR_CHUNK_SIZE: usize = 64 * 1024;
 
@@ -92,11 +94,7 @@ impl<'js> JsClass<'js> for StreamWritable {
         let proto = Object::new(ctx.clone())?;
         proto.set("write", Function::new(ctx.clone(), stream_write)?)?;
         proto.set("writeOne", Function::new(ctx.clone(), stream_write_one)?)?;
-        proto.set("writeAll", Function::new(ctx.clone(), stream_write_all)?)?;
-        proto.set(
-            "writeIterableItem",
-            Function::new(ctx.clone(), stream_write_iterable_item)?,
-        )?;
+        helpers::register(ctx, &proto)?;
         proto.set(
             "cancelWrite",
             Function::new(ctx.clone(), stream_cancel_write)?,
@@ -177,28 +175,6 @@ pub(crate) fn lower_iterable<'js>(
     Ok(handle)
 }
 
-fn typed_array_batch_len<'js>(
-    data: &Value<'js>,
-    ty: &wit_dylib_ffi::Stream,
-) -> rquickjs::Result<Option<usize>> {
-    let Some((obj, elem_ty)) = data.as_object().zip(ty.ty()) else {
-        return Ok(None);
-    };
-    match elem_ty {
-        wit_dylib_ffi::Type::U8 => typed_array_len_as!(obj, u8),
-        wit_dylib_ffi::Type::S8 => typed_array_len_as!(obj, i8),
-        wit_dylib_ffi::Type::U16 => typed_array_len_as!(obj, u16),
-        wit_dylib_ffi::Type::S16 => typed_array_len_as!(obj, i16),
-        wit_dylib_ffi::Type::U32 => typed_array_len_as!(obj, u32),
-        wit_dylib_ffi::Type::S32 => typed_array_len_as!(obj, i32),
-        wit_dylib_ffi::Type::U64 => typed_array_len_as!(obj, u64),
-        wit_dylib_ffi::Type::S64 => typed_array_len_as!(obj, i64),
-        wit_dylib_ffi::Type::F32 => typed_array_len_as!(obj, f32),
-        wit_dylib_ffi::Type::F64 => typed_array_len_as!(obj, f64),
-        _ => Ok(None),
-    }
-}
-
 /// Fast path for `writable.write(typedArray)`
 fn try_typed_array_to_buffer<'js>(
     data: &Value<'js>,
@@ -241,10 +217,7 @@ fn stream_next<'js>(
 ) -> rquickjs::Result<Value<'js>> {
     let (type_index, finished) = {
         let readable = this.0.borrow();
-        (
-            readable.end.type_index,
-            readable.end.handle.is_none() || readable.end.state == CopyState::Done,
-        )
+        (readable.end.type_index(), readable.end.is_closed())
     };
 
     if finished {
@@ -303,29 +276,8 @@ fn stream_read_impl<'js>(
         };
         ctx.task().register(handle, pending);
     } else {
-        let (actual_count, copy_result) =
-            unpack_copy_result(code).expect("non-BLOCKED stream read must decode");
+        let result_val = finish_read(&ctx, &this.0, call, buffer, code, iterator, false)?;
 
-        let dropped_handle = {
-            let mut readable = this.0.borrow_mut();
-            readable.end.mark_completed(copy_result);
-            (copy_result == CopyResult::Dropped)
-                .then(|| readable.end.handle.take())
-                .flatten()
-        };
-
-        let result_val = lift_stream_read_result(
-            &ctx,
-            ty,
-            call,
-            buffer,
-            actual_count as usize,
-            copy_result,
-            iterator,
-        )?;
-        if let Some(handle) = dropped_handle {
-            unsafe { ty.drop_readable()(handle) };
-        }
         resolve
             .call::<_, Value>((result_val,))
             .expect("resolve stream read");
@@ -334,6 +286,90 @@ fn stream_read_impl<'js>(
     Ok(promise.into_value())
 }
 
+/// Finish a stream read from an immediate result, callback, or cancellation.
+///
+/// Update endpoint ownership before lifting, release closed handles outside the
+/// class borrow, and adapt the lifted value to the requested iterator shape.
+/// `close` completes an iterator's pending `return()`: drop the readable handle
+/// even if the copy was only cancelled, and resolve the read as `done`.
+fn finish_read<'js>(
+    ctx: &Ctx<'js>,
+    cls: &Class<'js, StreamReadable>,
+    call: QjsCallContext,
+    buffer: BufferGuard,
+    code: u32,
+    iter: bool,
+    close: bool,
+) -> rquickjs::Result<Value<'js>> {
+    let (progress, result) =
+        unpack_copy_result(code).expect("stream read completion must not block");
+
+    let (type_index, dropped_handle) = {
+        let mut readable = cls.borrow_mut();
+        readable.end.mark_completed(result);
+
+        let handle = if close || result == CopyResult::Dropped {
+            readable.end.begin_drop()?
+        } else {
+            None
+        };
+
+        (readable.end.type_index(), handle)
+    };
+
+    let ty = ctx.wit().stream(type_index as usize);
+    let value = lift_stream_read_result(ctx, ty, call, buffer, progress as usize, result, iter)?;
+
+    if let Some(handle) = dropped_handle {
+        unsafe { ty.drop_readable()(handle) };
+    }
+
+    if close && iter {
+        iterator_result(ctx, Value::new_undefined(ctx.clone()), true)
+    } else {
+        Ok(value)
+    }
+}
+
+/// Finish a stream write, committing only the resource groups actually consumed.
+///
+/// Keep the conversion context alive through settlement in the caller. Host
+/// destructors run only after the endpoint's class borrow has been released.
+fn finish_write<'js>(
+    ctx: &Ctx<'js>,
+    cls: &Class<'js, StreamWritable>,
+    call: &mut QjsCallContext,
+    buffer: BufferGuard,
+    code: u32,
+) -> rquickjs::Result<Value<'js>> {
+    let (progress, result) =
+        unpack_copy_result(code).expect("stream write completion must not block");
+
+    drop(buffer);
+    call.complete_transfers(progress as usize);
+
+    let (type_index, dropped_handle) = {
+        let mut writable = cls.borrow_mut();
+        writable.end.mark_completed(result);
+
+        let handle = if result == CopyResult::Dropped {
+            writable.end.begin_drop()?
+        } else {
+            None
+        };
+
+        (writable.end.type_index(), handle)
+    };
+
+    if let Some(handle) = dropped_handle {
+        let ty = ctx.wit().stream(type_index as usize);
+        unsafe { ty.drop_writable()(handle) };
+    }
+
+    Ok(Value::new_number(ctx.clone(), progress as f64))
+}
+
+/// Lift copied elements before releasing their ABI buffer and resource guards.
 fn lift_stream_read_result<'js>(
     ctx: &Ctx<'js>,
     ty: wit_dylib_ffi::Stream,
@@ -341,7 +377,7 @@ fn lift_stream_read_result<'js>(
     buffer: BufferGuard,
     progress: usize,
     copy_result: CopyResult,
-    iterator: bool,
+    iter: bool,
 ) -> rquickjs::Result<Value<'js>> {
     let value = if matches!(ty.ty(), Some(wit_dylib_ffi::Type::U8)) {
         let vec = unsafe { buffer.into_vec(progress) };
@@ -352,9 +388,10 @@ fn lift_stream_read_result<'js>(
             unsafe { ty.lift(&mut call, buffer.ptr().add(ty.abi_payload_size() * offset)) };
             arr.set(offset, call.pop_value(ctx))?;
         }
+
         drop(buffer);
 
-        if iterator {
+        if iter {
             if progress == 0 {
                 Value::new_undefined(ctx.clone())
             } else {
@@ -365,7 +402,7 @@ fn lift_stream_read_result<'js>(
         }
     };
 
-    if iterator {
+    if iter {
         iterator_result(
             ctx,
             value,
@@ -384,6 +421,7 @@ fn iterator_result<'js>(
     let result = Object::new(ctx.clone())?;
     result.set("value", value)?;
     result.set("done", done)?;
+
     Ok(result.into_value())
 }
 
@@ -395,6 +433,7 @@ fn resolved_iterator_result<'js>(
     let (promise, resolve, _reject) = ctx.promise()?;
     let result = iterator_result(&ctx, value, done)?;
     resolve.call::<_, Value>((result,))?;
+
     Ok(promise.into_value())
 }
 
@@ -408,36 +447,37 @@ fn stream_iterator_return<'js>(
     this: This<Class<'js, StreamReadable>>,
     ctx: Ctx<'js>,
 ) -> rquickjs::Result<Value<'js>> {
-    let (handle, type_index, state) = {
+    let (has_handle, pending, cancellable) = {
         let readable = this.0.borrow();
         (
-            readable.end.handle,
-            readable.end.type_index,
-            readable.end.state,
+            readable.end.has_handle(),
+            readable.end.is_pending(),
+            readable.end.can_cancel(),
         )
     };
 
-    let Some(handle) = handle else {
-        return resolved_iterator_result(ctx.clone(), Value::new_undefined(ctx), true);
-    };
-    let ty = ctx.wit().stream(type_index as usize);
-
-    if matches!(state, CopyState::Idle | CopyState::Done) {
-        this.0.borrow_mut().end.handle.take();
-        unsafe { ty.drop_readable()(handle) };
-        this.0.borrow_mut().end.state = CopyState::Done;
+    if !has_handle {
         return resolved_iterator_result(ctx.clone(), Value::new_undefined(ctx), true);
     }
 
-    if state != CopyState::AsyncCopying {
+    if !pending {
+        stream_drop_readable(this, ctx.clone())?;
+        return resolved_iterator_result(ctx.clone(), Value::new_undefined(ctx), true);
+    }
+
+    if !cancellable {
         return Err(rquickjs::Error::new_from_js(
             "stream",
             "iterator return while cancellation is in progress",
         ));
     }
 
+    let (handle, type_index) = this.0.borrow().end.begin_cancel()?;
+    let ty = ctx.wit().stream(type_index as usize);
     let (promise, resolve, _reject) = ctx.promise()?;
+
     ctx.task().unjoin(handle);
+
     let code = unsafe { ty.cancel_read()(handle) };
     ctx.task()
         .set_stream_iterator_return(handle, Persistent::save(&ctx, resolve));
@@ -483,8 +523,9 @@ fn stream_drop_readable<'js>(
 ) -> rquickjs::Result<()> {
     let (handle, type_index) = {
         let mut readable = this.0.borrow_mut();
-        (readable.end.begin_drop()?, readable.end.type_index)
+        (readable.end.begin_drop()?, readable.end.type_index())
     };
+
     if let Some(handle) = handle {
         let ty = ctx.wit().stream(type_index as usize);
         unsafe { ty.drop_readable()(handle) };
@@ -513,68 +554,6 @@ fn stream_write_one<'js>(
     data: Value<'js>,
 ) -> rquickjs::Result<Value<'js>> {
     stream_write_impl(this, ctx, data, StreamWriteMode::One)
-}
-
-fn stream_write_iterable_item<'js>(
-    this: This<Class<'js, StreamWritable>>,
-    ctx: Ctx<'js>,
-    data: Value<'js>,
-) -> rquickjs::Result<Value<'js>> {
-    let (type_index, closed) = {
-        let writable = this.0.borrow();
-        (
-            writable.end.type_index,
-            writable.end.handle.is_none() || writable.end.state == CopyState::Done,
-        )
-    };
-    if closed {
-        let result = Value::new_number(ctx.clone(), 0.0);
-        return map_write_completion(ctx, result, 1);
-    }
-
-    let ty = ctx.wit().stream(type_index as usize);
-    let batch_len = typed_array_batch_len(&data, &ty)?;
-    let expected = batch_len.unwrap_or(1);
-
-    let result = if batch_len.is_some() {
-        stream_write_all(this, ctx.clone(), data)?
-    } else {
-        stream_write_one(this, ctx.clone(), data)?
-    };
-
-    map_write_completion(ctx, result, expected)
-}
-
-fn map_write_completion<'js>(
-    ctx: Ctx<'js>,
-    result: Value<'js>,
-    expected: usize,
-) -> rquickjs::Result<Value<'js>> {
-    let Some(promise) = result.as_object() else {
-        let written: usize = result.get()?;
-        let (promise, resolve, _reject) = ctx.promise()?;
-        let complete = Value::new_bool(ctx.clone(), written == expected);
-        resolve.call::<_, Value>((complete,))?;
-        return Ok(promise.into_value());
-    };
-
-    let then: Function = promise.get("then")?;
-    let complete = crate::coerce_fn(
-        move |ctx: Ctx<'_>, args: Rest<Value<'_>>| -> rquickjs::Result<Value<'_>> {
-            let written: usize = args
-                .0
-                .into_iter()
-                .next()
-                .ok_or_else(|| rquickjs::Error::new_from_js("undefined", "write count"))?
-                .get()?;
-            Ok(Value::new_bool(ctx, written == expected))
-        },
-    );
-    let callback = Function::new(ctx.clone(), complete)?;
-    let mut args = function::Args::new(ctx, 1);
-    args.this(result)?;
-    args.push_arg(callback)?;
-    then.call_arg(args)
 }
 
 fn stream_write_impl<'js>(
@@ -635,147 +614,14 @@ fn stream_write_impl<'js>(
         };
         ctx.task().register(handle, pending);
     } else {
-        drop(buffer);
-        let (progress, copy_result) = unpack_copy_result(code).expect("non-blocked");
-        call.complete_transfers(progress as usize);
-        let dropped_handle = {
-            let mut writable = this.0.borrow_mut();
-            writable.end.mark_completed(copy_result);
-            (copy_result == CopyResult::Dropped)
-                .then(|| writable.end.handle.take())
-                .flatten()
-        };
-        if let Some(handle) = dropped_handle {
-            unsafe { ty.drop_writable()(handle) };
-        }
+        let result = finish_write(&ctx, &this.0, &mut call, buffer, code)?;
 
-        let result = Value::new_number(ctx.clone(), progress as f64);
         resolve
             .call::<_, Value>((result,))
             .expect("resolve stream write");
     }
 
     Ok(promise.into_value())
-}
-
-fn stream_write_all<'js>(
-    this: This<Class<'js, StreamWritable>>,
-    ctx: Ctx<'js>,
-    buffer: Value<'js>,
-) -> rquickjs::Result<Value<'js>> {
-    let stream_val = this.0.into_inner().into_value();
-    write_all_step(ctx, stream_val, buffer, 0)
-}
-
-fn write_all_buffer_len(value: &Value<'_>) -> rquickjs::Result<usize> {
-    if let Some(array) = value.as_array() {
-        return Ok(array.len());
-    }
-
-    let object = value
-        .as_object()
-        .ok_or_else(|| rquickjs::Error::new_from_js(value.type_of().as_str(), "array"))?;
-    object.get("length")
-}
-
-fn write_all_step<'js>(
-    ctx: Ctx<'js>,
-    stream: Value<'js>,
-    buffer: Value<'js>,
-    total: usize,
-) -> rquickjs::Result<Value<'js>> {
-    // Check termination: buffer empty or stream done.
-    let class = Class::<StreamWritable>::from_value(&stream)?;
-    let state = class.borrow().end.state;
-    if state == CopyState::Done {
-        return Ok(Value::new_number(ctx, total as f64));
-    }
-
-    let buffer_len = write_all_buffer_len(&buffer)?;
-    if buffer_len == 0 {
-        return Ok(Value::new_number(ctx, total as f64));
-    }
-
-    // Call stream.write(buffer) with proper `this` binding.
-    let stream_obj = stream
-        .as_object()
-        .ok_or_else(|| rquickjs::Error::new_from_js("value", "stream object"))?;
-
-    let write_fn: Function = stream_obj.get("write")?;
-    let mut call_args = function::Args::new(ctx.clone(), 1);
-    call_args.this(stream.clone())?;
-    call_args.push_arg(buffer.clone())?;
-
-    let write_result: Value = write_fn.call_arg(call_args)?;
-
-    let promise_obj = write_result
-        .as_object()
-        .ok_or_else(|| rquickjs::Error::new_from_js("value", "promise"))?;
-    let then_fn: Function = promise_obj.get("then")?;
-
-    let stream_c = Cell::new(Some(Persistent::save(&ctx, stream)));
-    let buffer_c = Cell::new(Some(Persistent::save(&ctx, buffer)));
-
-    let next = crate::coerce_fn(
-        move |ctx: Ctx<'_>, args: Rest<Value<'_>>| -> rquickjs::Result<Value<'_>> {
-            let count_val = args
-                .0
-                .into_iter()
-                .next()
-                .ok_or_else(|| rquickjs::Error::new_from_js("undefined", "write count"))?;
-
-            let count: usize = count_val.get()?;
-            let buf = buffer_c
-                .take()
-                .ok_or_else(|| rquickjs::Error::new_from_js("undefined", "write buffer"))?
-                .restore(&ctx)?;
-
-            let s = stream_c
-                .take()
-                .ok_or_else(|| rquickjs::Error::new_from_js("undefined", "stream"))?
-                .restore(&ctx)?;
-
-            let buffer_len = write_all_buffer_len(&buf)?;
-            if count > buffer_len {
-                return Err(rquickjs::Exception::throw_range(
-                    &ctx,
-                    &format!("stream write reported {count} items for a {buffer_len}-item buffer"),
-                ));
-            }
-
-            let class = Class::<StreamWritable>::from_value(&s)?;
-            let state = class.borrow().end.state;
-            if count == 0 {
-                if state == CopyState::Done {
-                    return Ok(Value::new_number(ctx, total as f64));
-                }
-                return Err(rquickjs::Exception::throw_range(
-                    &ctx,
-                    "stream write made no progress",
-                ));
-            }
-            if state == CopyState::Done {
-                return Ok(Value::new_number(ctx, (total + count) as f64));
-            }
-
-            let obj = buf
-                .as_object()
-                .ok_or_else(|| rquickjs::Error::new_from_js(buf.type_of().as_str(), "array"))?;
-
-            let slice_fn: Function = obj.get("slice")?;
-            let mut slice_args = function::Args::new(ctx.clone(), 1);
-            slice_args.this(buf.clone())?;
-            slice_args.push_arg(count)?;
-            let sliced = slice_fn.call_arg(slice_args)?;
-
-            write_all_step(ctx, s, sliced, total + count)
-        },
-    );
-    let cb = Function::new(ctx.clone(), next)?;
-    let mut then_args = function::Args::new(ctx.clone(), 1);
-    then_args.this(write_result)?;
-    then_args.push_arg(cb)?;
-    then_fn.call_arg(then_args)
 }
 
 pub(crate) fn stream_cancel_write<'js>(
@@ -809,7 +655,7 @@ fn stream_drop_writable<'js>(
 ) -> rquickjs::Result<()> {
     let (handle, type_index) = {
         let mut writable = this.0.borrow_mut();
-        (writable.end.begin_drop()?, writable.end.type_index)
+        (writable.end.begin_drop()?, writable.end.type_index())
     };
     if let Some(handle) = handle {
         let ty = ctx.wit().stream(type_index as usize);
@@ -826,38 +672,17 @@ pub(crate) fn handle_write_event(handle: u32, result: u32) {
         mut call,
         resolve,
         wrapper,
-        ..
+        buffer,
     } = pending
     else {
         unreachable!("expected StreamWrite pending");
     };
 
-    let (progress, copy_result) =
-        unpack_copy_result(result).expect("StreamWrite callback should not be BLOCKED");
-    call.complete_transfers(progress as usize);
-
     let result = with_ctx(|ctx| {
         let w = wrapper.restore(ctx).unwrap();
-        let cls = Class::<StreamWritable>::from_value(&w).unwrap();
-
-        let (type_index, dropped_handle) = {
-            let mut writable = cls.borrow_mut();
-            writable.end.mark_completed(copy_result);
-            (
-                writable.end.type_index,
-                (copy_result == CopyResult::Dropped)
-                    .then(|| writable.end.handle.take())
-                    .flatten(),
-            )
-        };
-        if let Some(handle) = dropped_handle {
-            let ty = ctx.wit().stream(type_index as usize);
-            unsafe { ty.drop_writable()(handle) };
-        }
-
-        let val = Value::new_number(ctx.clone(), progress as f64);
-        let res = Persistent::save(ctx, val);
-        Some(res)
+        let class = Class::<StreamWritable>::from_value(&w).unwrap();
+        let value = finish_write(ctx, &class, &mut call, buffer, result).unwrap();
+        Some(Persistent::save(ctx, value))
     });
     resolve_promise(resolve, result);
 }
@@ -878,40 +703,12 @@ pub(crate) fn handle_read_event(handle: u32, result: u32) {
         unreachable!("expected StreamRead pending");
     };
 
-    let (progress, copy_result) =
-        unpack_copy_result(result).expect("StreamRead callback should not be BLOCKED");
-
     let (result, return_result) = with_ctx(|ctx| {
         let w = wrapper.restore(ctx).unwrap();
         let class = Class::<StreamReadable>::from_value(&w).unwrap();
 
         let close = iterator_return.is_some();
-        let (type_index, dropped_handle) = {
-            let mut cls = class.borrow_mut();
-            cls.end.mark_completed(copy_result);
-            if close {
-                cls.end.state = CopyState::Done;
-            }
-            (
-                cls.end.type_index,
-                (close || copy_result == CopyResult::Dropped)
-                    .then(|| cls.end.handle.take())
-                    .flatten(),
-            )
-        };
-
-        let ty = ctx.wit().stream(type_index as usize);
-        let progress = progress as usize;
-
-        let mut result_val =
-            lift_stream_read_result(ctx, ty, call, buffer, progress, copy_result, iterator)
-                .unwrap();
-        if close && iterator {
-            result_val = iterator_result(ctx, Value::new_undefined(ctx.clone()), true).unwrap();
-        }
-        if let Some(handle) = dropped_handle {
-            unsafe { ty.drop_readable()(handle) };
-        }
+        let result_val = finish_read(ctx, &class, call, buffer, result, iterator, close).unwrap();
 
         let return_result = iterator_return.map(|resolve| {
             let result = iterator_result(ctx, Value::new_undefined(ctx.clone()), true).unwrap();
