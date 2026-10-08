@@ -244,7 +244,99 @@ async fn wizer_init(
 
     let mut linker = Linker::new(&engine);
     linker.allow_shadowing(true);
-    linker.define_unknown_imports_as_traps(&comp)?;
+    // Resource aliases must preserve the identity supplied by the WASI linker.
+    // Compare component types, so unrelated user resources with the same name stay distinct.
+    let mut resource_aliases = Vec::new();
+    for (interface, item) in comp.component_type().imports(&engine) {
+        let wasmtime::component::types::ComponentItem::ComponentInstance(instance) = item.ty else {
+            continue;
+        };
+        for (name, item) in instance.exports(&engine) {
+            let wasmtime::component::types::ComponentItem::Resource(resource) = item.ty else {
+                continue;
+            };
+            let host = match (interface.split('@').next().unwrap_or(interface), name) {
+                ("wasi:io/streams", "input-stream") => {
+                    Some(wasmtime::component::ResourceType::host::<
+                        wasmtime_wasi::p2::DynInputStream,
+                    >())
+                }
+                ("wasi:io/streams", "output-stream") => {
+                    Some(wasmtime::component::ResourceType::host::<
+                        wasmtime_wasi::p2::DynOutputStream,
+                    >())
+                }
+                ("wasi:io/poll", "pollable") => Some(wasmtime::component::ResourceType::host::<
+                    wasmtime_wasi::p2::DynPollable,
+                >()),
+                ("wasi:io/error", "error") => Some(wasmtime::component::ResourceType::host::<
+                    wasmtime_wasi::p2::IoError,
+                >()),
+                _ => None,
+            };
+            if let Some(host) = host {
+                resource_aliases.push((resource, host));
+            }
+        }
+    }
+    fn trap_import(
+        linker: &mut wasmtime::component::LinkerInstance<'_, Ctx>,
+        engine: &Engine,
+        name: &str,
+        ty: wasmtime::component::types::ComponentItem,
+        aliases: &[(
+            wasmtime::component::ResourceType,
+            wasmtime::component::ResourceType,
+        )],
+    ) -> Result<()> {
+        use wasmtime::component::types::ComponentItem;
+        match ty {
+            ComponentItem::ComponentInstance(instance) => {
+                let mut nested = linker.instance(name)?;
+                for (export, ty) in instance.exports(engine) {
+                    trap_import(&mut nested, engine, export, ty.ty, aliases)?;
+                }
+            }
+            ComponentItem::ComponentFunc(func) if func.async_() => {
+                let name = name.to_owned();
+                linker.func_new_concurrent(&name.clone(), move |_, _, _, _| {
+                    let name = name.clone();
+                    Box::pin(async move {
+                        Err(wasmtime::Error::msg(format!(
+                            "unknown import: `{name}` has not been defined"
+                        )))
+                    })
+                })?;
+            }
+            ComponentItem::ComponentFunc(_) => {
+                let name = name.to_owned();
+                linker.func_new(&name.clone(), move |_, _, _, _| {
+                    Err(wasmtime::Error::msg(format!(
+                        "unknown import: `{name}` has not been defined"
+                    )))
+                })?;
+            }
+            ComponentItem::Resource(ty) => {
+                let resource = aliases
+                    .iter()
+                    .find(|(source, _)| *source == ty)
+                    .map(|(_, host)| *host)
+                    .unwrap_or_else(|| wasmtime::component::ResourceType::host::<()>());
+                linker.resource(name, resource, |_, _| Ok(()))?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    for (name, item) in comp.component_type().imports(&engine) {
+        trap_import(
+            &mut linker.root(),
+            &engine,
+            name,
+            item.ty,
+            &resource_aliases,
+        )?;
+    }
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
     wasmtime_wasi::p3::add_to_linker(&mut linker)?;
 
