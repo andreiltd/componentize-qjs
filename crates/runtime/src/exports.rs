@@ -5,10 +5,9 @@ use rquickjs::function::{Args, Constructor, Rest};
 use rquickjs::{Ctx, Exception, Function, Object, Persistent, Value};
 use wit_dylib_ffi::ExportFunction;
 
-use crate::result::{JsCompletion, ResultBoundary};
 use crate::trivia::{fn_lookup, iface_lookup};
 use crate::wit_imports::{FuncKind, classify};
-use crate::{CtxExt, QjsCallContext, coerce_fn};
+use crate::{CtxExt, coerce_fn};
 
 /// A resolved export with its arguments and JavaScript receiver already bound.
 pub(crate) enum ExportCall<'js> {
@@ -36,6 +35,8 @@ impl<'js> ExportCall<'js> {
         ctx: &Ctx<'js>,
         func: ExportFunction,
     ) -> rquickjs::Result<Value<'js>> {
+        let completion = ctx.task().completion();
+        let fulfilled = completion.clone();
         let result = self.invoke()?;
         let promise = result
             .as_object()
@@ -52,7 +53,9 @@ impl<'js> ExportCall<'js> {
                     .next()
                     .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
 
-                finish_async_export(ctx, func, JsCompletion::Return(value))
+                // Record settlement for the owning export; another task may be draining jobs.
+                fulfilled.borrow_mut().result = Some((func, Persistent::save(&ctx, value), false));
+                Ok(Value::new_undefined(ctx))
             }),
         )?;
 
@@ -65,7 +68,8 @@ impl<'js> ExportCall<'js> {
                     .next()
                     .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
 
-                finish_async_export(ctx, func, JsCompletion::Throw(reason))
+                completion.borrow_mut().result = Some((func, Persistent::save(&ctx, reason), true));
+                Ok(Value::new_undefined(ctx))
             }),
         )?;
 
@@ -75,38 +79,6 @@ impl<'js> ExportCall<'js> {
         args.push_arg(reject)?;
         then.call_arg(args)
     }
-}
-
-/// Lower one promise settlement, release argument guards, and return to the host.
-///
-/// Cancellation owns task completion once requested. Otherwise, keep the result
-/// conversion context alive until `task.return` has consumed its transfers.
-fn finish_async_export<'js>(
-    ctx: Ctx<'js>,
-    func: ExportFunction,
-    compl: JsCompletion<'js>,
-) -> rquickjs::Result<Value<'js>> {
-    if ctx.task().is_cancelling() {
-        return Ok(Value::new_undefined(ctx));
-    }
-
-    let boundary = ResultBoundary::new(func.result());
-    let maybe_val = match compl {
-        JsCompletion::Return(value) => boundary.lower_value(&ctx, value),
-        JsCompletion::Throw(reason) => boundary.lower_throw(&ctx, reason),
-    };
-
-    let val = maybe_val.expect("Failed to complete");
-    let mut call = QjsCallContext::default();
-
-    if let Some(val) = val {
-        call.push_value(&ctx, val);
-    }
-
-    ctx.task().finish_export();
-    func.call_task_return(&mut call);
-    call.complete_transfers(1);
-    Ok(Value::new_undefined(ctx))
 }
 
 /// Resolve an export's namespace/member and bind its receiver and arguments.

@@ -2,6 +2,8 @@
 #![allow(unsafe_code)]
 
 use std::cell::RefCell;
+use std::rc::Rc;
+use wit_dylib_ffi::ExportFunction;
 
 use rquickjs::class::Class;
 use rquickjs::function::This;
@@ -135,7 +137,13 @@ impl CancelRequest {
 /// Removing an entry first unjoins its handle so the set and the ownership map
 /// remain synchronized.
 #[derive(Default)]
+pub(crate) struct ExportCompletion {
+    pub(crate) result: Option<(ExportFunction, Persistent<Value<'static>>, bool)>,
+}
+
+#[derive(Default)]
 struct TaskInner {
+    completion: Rc<RefCell<ExportCompletion>>,
     pending: DetHashMap<u32, PendingEntry>,
     waitable_set: Option<u32>,
     export_call: Option<Box<QjsCallContext>>,
@@ -246,6 +254,10 @@ impl TaskState {
         });
     }
 
+    pub(crate) fn completion(&self) -> Rc<RefCell<ExportCompletion>> {
+        self.with(|inner| inner.completion.clone())
+    }
+
     pub(crate) fn finish_export(&self) {
         let call = self.with(|inner| {
             assert!(!inner.cancel && !inner.returned, "task already completed");
@@ -347,10 +359,37 @@ impl TaskState {
                 drain_resource_drops(ctx);
             }
             drain_resource_drops(ctx);
+            let completed = self.with(|inner| inner.completion.borrow_mut().result.take());
+            if let Some((func, value, rejected)) = completed {
+                if !self.is_cancelling() {
+                    let boundary = ResultBoundary::new(func.result());
+                    let value = value.restore(ctx).expect("export result restore failed");
+                    let value = if rejected {
+                        boundary.lower_throw(ctx, value)
+                    } else {
+                        boundary.lower_value(ctx, value)
+                    }
+                    .expect("async export result lowering failed");
+                    let mut call = QjsCallContext::default();
+                    if let Some(value) = value {
+                        call.push_value(ctx, value);
+                    }
+                    self.finish_export();
+                    func.call_task_return(&mut call);
+                    call.complete_transfers(1);
+                }
+            }
         });
 
         let mut inner = self.0.borrow_mut().take().expect("no active task state");
 
+        if inner.pending.is_empty() && !inner.returned && !inner.cancel {
+            // A JavaScript promise may be settled by another export's callback.
+            // Keep its call state alive and let the host run other tasks before retrying.
+            let ptr = Box::into_raw(Box::new(inner)) as usize;
+            unsafe { context_set(u32::try_from(ptr).unwrap()) };
+            return CallbackCode::Yield.encode(0);
+        }
         if inner.pending.is_empty() {
             drop(inner.export_call.take());
             with_ctx(drain_resource_drops);
