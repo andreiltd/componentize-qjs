@@ -33,7 +33,11 @@ export function resetAccumulator() {
 }
 
 export function getMemoryUsage() {
-    return __cqjs.getMemoryUsage();
+    const { mallocSize, memoryUsedSize } = __cqjs.getMemoryUsage();
+    return {
+        mallocSize: BigInt(mallocSize),
+        memoryUsedSize: BigInt(memoryUsedSize),
+    };
 }
 export function runGc() {
     __cqjs.runGc();

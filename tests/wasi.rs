@@ -17,7 +17,7 @@ fn test_wasi_random() {
             import random from "wasi:random/random@0.2.12";
 
             export function getRandomU64() { return random.getRandomU64(); }
-            export function getRandomBytes(len) { return random.getRandomBytes(len); }
+            export function getRandomBytes(len) { return random.getRandomBytes(BigInt(len)); }
         "#,
         )
         .build()
@@ -49,7 +49,7 @@ fn test_wasi_named_imports() {
             } from "wasi:random/random@0.2.12";
 
             export function getRandomU64() { return randomU64(); }
-            export function getRandomBytes(len) { return randomBytes(len); }
+            export function getRandomBytes(len) { return randomBytes(BigInt(len)); }
         "#,
         )
         .build()
@@ -164,7 +164,7 @@ fn test_wasi_stdio() {
                 while (true) {
                     let chunk;
                     try {
-                        chunk = input.blockingRead(4096);
+                        chunk = input.blockingRead(4096n);
                     } catch (e) {
                         if (e && e.payload && e.payload.tag === "closed") {
                             break;

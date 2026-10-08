@@ -1371,6 +1371,36 @@ fn test_signed_integer_boundaries() {
         .expect_call("echo-s32", vec![Val::S32(i32::MIN)], Val::S32(i32::MIN))
         .expect_call("echo-s32", vec![Val::S32(i32::MAX)], Val::S32(i32::MAX))
         .expect_call("echo-s64", vec![Val::S64(-1)], Val::S64(-1))
+        .expect_call("echo-s64", vec![Val::S64(i64::MIN)], Val::S64(i64::MIN))
+        .expect_call("echo-s64", vec![Val::S64(i64::MAX)], Val::S64(i64::MAX))
+        .build()
+        .unwrap()
+        .run();
+}
+
+#[test]
+fn test_unsigned_integer_precision_boundaries() {
+    TestCase::new()
+        .wit(
+            r#"
+            package test:unsigned-bounds;
+            world unsigned-bounds {
+                export echo-u64: func(v: u64) -> u64;
+            }
+        "#,
+        )
+        .script(
+            r#"
+            export function echoU64(v) { return v; }
+        "#,
+        )
+        .stub_wasi()
+        .expect_call(
+            "echo-u64",
+            vec![Val::U64((1u64 << 53) + 1)],
+            Val::U64((1u64 << 53) + 1),
+        )
+        .expect_call("echo-u64", vec![Val::U64(u64::MAX)], Val::U64(u64::MAX))
         .build()
         .unwrap()
         .run();
