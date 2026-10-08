@@ -1,0 +1,2 @@
+[buildscript.run]
+rustc_link_lib = true

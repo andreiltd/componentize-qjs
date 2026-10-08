@@ -1,6 +1,6 @@
 # componentize-qjs
 
-[![CI](https://github.com/andreiltd/componentize-qjs/actions/workflows/ci.yml/badge.svg)](https://github.com/andreiltd/componentize-qjs/actions/workflows/ci.yml)
+[![CI](https://github.com/andreiltd/componentize-qjs/actions/workflows/buck2.yml/badge.svg)](https://github.com/andreiltd/componentize-qjs/actions/workflows/buck2.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 Convert JavaScript source code into
@@ -66,6 +66,213 @@ If you want to build from source run:
 ```bash
 cd npm && npm install && npm run build
 ```
+
+## Building with Buck2
+
+Cargo remains supported and is still the source of truth for dependencies.
+Buck2 builds the Rust crates, native dependencies, and all four embedded
+`wasm32-wasip2` runtimes directly; it does not run Cargo or consume Cargo's
+prebuilt runtimes. The `buck2` and `reindeer` launchers pin Buck2 2026-06-15
+and Reindeer v2026.04.27.00, verifying downloaded binaries with
+[DotSlash](https://dotslash-cli.com/). Buck downloads checksum-pinned Rust
+1.99.0 (including Clippy and both standard libraries), native LLVM, Node
+24.13.1, WASI SDK 33.0, and Binaryen 130 as declared build inputs.
+
+Install DotSlash, Python 3 for Buck's bundled prelude tools, and your
+platform's native C/C++ development libraries:
+the libc development files on Linux, Xcode Command Line Tools on macOS, or
+an x64 MSVC developer shell with the Windows SDK on Windows. Linux and
+macOS support x86-64 and arm64; Windows supports x86-64. No configuration
+helper, installed Rust/Clang/Node, or `rustup target add` is needed to build:
+
+```bash
+./buck2 build //:componentize-qjs
+./buck2 run //:componentize-qjs -- --wit hello.wit --js hello.js -o hello.wasm
+```
+
+On Windows, invoke the pinned launchers as `dotslash buck2 ...` and
+`dotslash reindeer ...`. The first build downloads several GiB of compiler
+archives, then reuses unchanged locally materialized build outputs. Native LLVM
+is 21.1.8 except on Intel macOS, which uses 19.1.7. Compiler inputs are tracked by Buck; native
+OS libraries and SDKs are still supplied by the host, so the build is not
+fully hermetic. On macOS, `xcrun` selects the native SDK for managed Clang
+and Cargo build scripts, including libclang's header lookup.
+
+| Target | Output |
+| --- | --- |
+| `//:componentize-qjs` | Native CLI |
+| `//:componentize-qjs-lib` | Core Rust library |
+| `//:componentize-qjs-node` | Node.js binding (`componentize-qjs.node`) |
+| `//:runtimes` | All four runtime Wasm modules |
+| `//:runtime`, `//:runtime-opt-size` | Async speed/size runtimes |
+| `//:runtime-sync`, `//:runtime-opt-size-sync` | Sync speed/size runtimes |
+
+Use `--show-full-simple-output` with `buck2 build` to print artifact paths.
+The Node binding can be loaded directly with `require()` using its artifact
+path; Cargo/npm packaging commands are unchanged.
+
+```bash
+./buck2 test --target-platforms root//platforms:test //:node-test
+```
+
+To exercise custom runtimes, including release-profile outputs, pass a
+`//:runtimes` artifact directory to `./buck2 run //:node-smoke -- <directory>`.
+The smoke test uses Buck's declared Node interpreter.
+
+On memory-constrained hosts, add `-j 1` to limit simultaneous build actions:
+
+```bash
+./buck2 test -j 1 --target-platforms root//platforms:test //:
+```
+
+```bash
+./buck2 test --target-platforms root//platforms:test //:
+
+./buck2 build --target-platforms root//platforms:release //:componentize-qjs //:runtimes
+./buck2 build -c componentize_qjs.async_support=false //:componentize-qjs
+./buck2 build -c componentize_qjs.opt_size=true //:componentize-qjs
+```
+
+Profiles are target configurations: `root//platforms:dev` (default),
+`root//platforms:test`, and `root//platforms:release`. Select one with
+`--target-platforms`; the old `componentize_qjs.profile` flag is rejected.
+Their artifacts use distinct configuration paths instead of overwriting
+each other when switching profiles. The test profile optimizes dependencies
+while retaining debug assertions, overflow checks, and the CLI's Cargo
+test-profile optimization override for its library, executable, and test
+suites. Release uses fat LTO and runs the pinned `wasm-opt` with the same
+speed/size passes as Cargo. The two boolean
+settings correspond to disabling `component-model-async` and enabling
+`opt-size`; runtime-selection CLI options remain unchanged. `//:xtask`
+builds the existing preparation tool, whose explicit execution still uses
+Cargo; the Buck runtime graph does not depend on it.
+
+### Command shortcuts
+
+With [Just](https://just.systems/) installed, run `just` to list useful Buck
+commands:
+
+```bash
+just build
+just run --wit hello.wit --js hello.js -o hello.wasm
+just test
+just test //:cli-test
+just clippy
+just runtimes release
+just test-node
+just check
+just check-runtimes
+```
+
+`just test` runs the root package's nine Rust suites and Node smoke test in
+the optimized test profile. Generated crate downloads are not tests.
+Bare `./buck2 test` still requires a target
+pattern; use `//:` or `//...`. `just release` builds release artifacts, and
+`just buckify` invokes Reindeer directly. `just clippy` lints all first-party
+crates with all features through the managed Clippy driver and fails on
+warnings or errors in Buck's diagnostic outputs. `just check` and
+`just check-generated` check only the generated dependencies.
+`just check-runtimes` exercises optimized runtimes and the sync-only,
+size-default CLI. The recipes use a POSIX shell
+(for example, Git Bash on Windows).
+
+### Build-file layout
+
+The root `BUCK` contains handwritten first-party targets. Like
+[`cxx`](https://github.com/dtolnay/cxx), it loads the Cargo manifests directly
+for package names, versions, editions, and compile-time environment metadata.
+Reindeer generates only external dependencies in `third-party/BUCK`.
+Supporting rules live beside the area they build:
+
+| File | Responsibility |
+| --- | --- |
+| `BUCK` | Handwritten first-party sources and dependencies, with Cargo-derived metadata |
+| `buck/config.bzl` | Profile attribute selection and feature switches |
+| `buck/project.bzl` | Cargo metadata and explicit core/runtime/CLI/NAPI/xtask macros |
+| `buck/runtime.bzl` | Wasm transitions, runtime optimization, and embedding |
+| `platforms/defs.bzl` | Host execution platform and optional remote caching |
+| `platforms/BUCK` | Host-based profile platforms and runtime optimization constraints |
+| `toolchains/BUCK`, `toolchains/defs.bzl`, `toolchains/releases.bzl` | Managed native/WASI compilers and release pins |
+| `third-party/defs.bzl` | Reindeer build scripts and crate downloads |
+| `third-party/BUCK` | Generated external Rust dependencies |
+| `tests/defs.bzl`, `tests/node.cjs` | Existing integration suites and Node smoke |
+| `third-party/fixups/` | Reindeer package-specific build adjustments |
+
+Only `third-party/BUCK` and `third-party/Cargo.lock` are generated.
+Version-only release bumps are read directly from Cargo and do not require
+regenerating the dependency graph. Cargo/release-plz remain responsible for
+publishing.
+Archive rules discard compilation-target constraints so native compilers and
+crate sources are shared across profiles and runtime variants rather than
+downloaded repeatedly.
+BuildBuddy's endpoint configuration remains in `.github/buildbuddy.buckconfig`.
+
+### Updating Buck dependencies
+
+`third-party/Cargo.toml` lists the workspace's external normal, build, and
+test dependency roots. Keep their version requirements and combined features
+aligned with the
+workspace manifests. Update the handwritten first-party dependency labels
+in `BUCK` when dependencies change.
+Regeneration requires installed Cargo/Rust 1.94+ and access to Cargo's
+package cache or registries; ordinary Buck builds require neither.
+
+After changing external dependencies or `Cargo.lock`, seed the import
+lockfile from Cargo's lockfile and resolve the small import package:
+
+```bash
+cp Cargo.lock third-party/Cargo.lock
+cargo metadata --format-version=1 \
+  --manifest-path third-party/Cargo.toml > /dev/null
+./reindeer --cargo-options=--locked buckify
+just check
+```
+
+No nightly Cargo options or `RUSTC_BOOTSTRAP` are needed. `just check`
+compares Reindeer's output with `third-party/BUCK`. Edit `third-party/fixups/`,
+not generated rules, and include the generated files with dependency changes.
+
+### Optional BuildBuddy cache
+
+BuildBuddy is opt-in and runs actions **locally**, using its remote action
+cache and CAS rather than remote execution:
+
+```bash
+export BUILDBUDDY_API_KEY=... # supply your key through your shell/secret manager
+export BUCK2_TEST_FORCE_CACHE_UPLOAD=1 # testing-only override; see below
+./buck2 build --config-file .github/buildbuddy.buckconfig \
+  -c buck2_re_client.instance_name=componentize-qjs-linux-x86_64-ubuntu24.04-sdk1 \
+  //:componentize-qjs
+```
+
+The key is expanded from the environment; its value is never written to the
+configuration. `.github/buildbuddy.buckconfig` supplies the cache endpoints,
+and cache uploads are enabled. An explicit instance namespace is required:
+choose one identifying your host OS, architecture, native libraries, and SDK
+version, and change it when those host inputs change. Managed compiler
+changes invalidate actions automatically. Omit the cache configuration
+flag for local-only builds; no generated local configuration is required.
+
+The pinned prelude disables uploads for Rust actions by default. Cache-enabled
+CI deliberately uses Buck's testing-only `BUCK2_TEST_FORCE_CACHE_UPLOAD`
+override. When updating the Buck2 pin, recheck that switch's support and
+verify Rust cache uploads and hits before relying on the cache. The override
+also uploads extracted compiler archives, so measure CAS volume and transfer
+time for each new runner-image namespace. Authenticated caching has not been
+validated locally.
+
+Pull requests use the Buck2 workflow's shared Just recipes for native builds,
+tests, managed Clippy, generated dependencies, and runtime validation.
+Cargo is used only for graph generation and Rust formatting in that workflow.
+Release entry points reuse `.github/workflows/ci.yml` to require both Buck2
+and Cargo builds, tests, and Clippy before publishing; published artifacts
+remain Cargo-produced. Validation and publishing check out the same revision.
+Each release entry point validates independently, including manual runs.
+The Buck2 workflow uses the optional `BUILDBUDDY_API_KEY` secret only for
+trusted pushes to the
+protected `buildbuddy` environment; pull requests build without that
+secret. Its cache namespace also includes the hosted runner's image version.
+Configuring that environment and secret is optional.
 
 ## Quick Start
 

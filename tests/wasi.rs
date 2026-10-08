@@ -1,8 +1,6 @@
 //! WASI integration tests for componentize-qjs
 mod common;
 
-use std::path::PathBuf;
-
 use wasmtime::component::Val;
 
 use common::{TestCase, wasi_wit_dir};
@@ -229,7 +227,7 @@ fn test_wasi_resources_finalized_during_result_lowering() {
 
 #[tokio::test]
 async fn test_wasi_0_3_stdio_example() {
-    let wit_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/wasi-stdio");
+    let wit_path = common::test_root().join("examples/wasi-stdio");
 
     let mut inst = TestCase::new()
         .wit_dir(wit_path)

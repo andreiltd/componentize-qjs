@@ -1,0 +1,81 @@
+load("@prelude//platforms:defs.bzl", "host_configuration")
+load(":defs.bzl", "archive_configuration", "cache_execution_platform")
+
+archive_configuration(
+    name = "archives",
+    visibility = ["PUBLIC"],
+)
+
+constraint_setting(
+    name = "profile",
+    visibility = ["PUBLIC"],
+)
+
+constraint_value(
+    name = "profile_dev",
+    constraint_setting = ":profile",
+    visibility = ["PUBLIC"],
+)
+
+constraint_value(
+    name = "profile_test",
+    constraint_setting = ":profile",
+    visibility = ["PUBLIC"],
+)
+
+constraint_value(
+    name = "profile_release",
+    constraint_setting = ":profile",
+    visibility = ["PUBLIC"],
+)
+
+platform(
+    name = "dev",
+    deps = ["prelude//platforms:default"],
+    constraint_values = [":profile_dev"],
+    visibility = ["PUBLIC"],
+)
+
+platform(
+    name = "test",
+    deps = ["prelude//platforms:default"],
+    constraint_values = [":profile_test"],
+    visibility = ["PUBLIC"],
+)
+
+platform(
+    name = "release",
+    deps = ["prelude//platforms:default"],
+    constraint_values = [":profile_release"],
+    visibility = ["PUBLIC"],
+)
+
+constraint_setting(
+    name = "runtime_optimization",
+    visibility = ["PUBLIC"],
+)
+
+constraint_value(
+    name = "runtime_speed",
+    constraint_setting = ":runtime_optimization",
+    visibility = ["PUBLIC"],
+)
+
+constraint_value(
+    name = "runtime_size",
+    constraint_setting = ":runtime_optimization",
+    visibility = ["PUBLIC"],
+)
+
+config_setting(
+    name = "release_runtime_size",
+    constraint_values = [":profile_release", ":runtime_size"],
+    visibility = ["PUBLIC"],
+)
+
+cache_execution_platform(
+    name = "cache",
+    cpu = host_configuration.cpu,
+    os = host_configuration.os,
+    windows = host_info().os.is_windows,
+)

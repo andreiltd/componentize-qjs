@@ -6,3 +6,21 @@
 /crates/core/wit/** text=auto eol=lf
 /crates/runtime/** text=auto eol=lf
 /xtask/** text=auto eol=lf
+
+# Buck inputs and generated graphs must be identical across operating systems.
+/.buckconfig text eol=lf
+/.buckroot text eol=lf
+/BUCK text eol=lf
+/buck2 text eol=lf
+/reindeer text eol=lf
+/reindeer.toml text eol=lf
+/justfile text eol=lf
+/buck/** text=auto eol=lf
+/platforms/** text=auto eol=lf
+/toolchains/** text=auto eol=lf
+/tests/defs.bzl text eol=lf
+/tests/buck/** text=auto eol=lf
+/tests/node.cjs text eol=lf
+/third-party/** text=auto eol=lf
+/third-party/BUCK linguist-generated
+/third-party/Cargo.lock linguist-generated
