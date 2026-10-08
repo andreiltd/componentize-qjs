@@ -1,0 +1,181 @@
+load("@prelude//tests:test_toolchain.bzl", "noop_test_toolchain")
+load("@prelude//toolchains:cxx.bzl", "cxx_tools_info_toolchain")
+load("@prelude//toolchains:genrule.bzl", "system_genrule_toolchain")
+load("@prelude//toolchains:python.bzl", "system_python_bootstrap_toolchain", "system_python_toolchain")
+load("@prelude//toolchains:remote_test_execution.bzl", "remote_test_execution_toolchain")
+load("@root//buck:config.bzl", "profile_select")
+load("@root//third-party:defs.bzl", http_archive = "crate_download")
+load(":defs.bzl", "archive_binary", "downloaded_rust_toolchain", "llvm_tools", "wasi_cxx_toolchain")
+load(":releases.bzl", "BINARYEN_SHA256", "BINARYEN_VERSION", "CLIPPY_SHA256", "LLVM_RELEASES", "NODE_SHA256", "NODE_VERSION", "RUSTC_SHA256", "RUST_DATE", "RUST_STD_SHA256", "RUST_VERSION", "WASI_SDK_SHA256", "WASI_SDK_VERSION")
+
+_OS = "windows" if host_info().os.is_windows else "macos" if host_info().os.is_macos else "linux"
+_ARCH = "arm64" if host_info().arch.is_aarch64 else "x86_64"
+_SDK_PLATFORM = _ARCH + "-" + _OS
+
+_HOST_TRIPLE = ("aarch64" if _ARCH == "arm64" else "x86_64") + {
+    "linux": "-unknown-linux-gnu",
+    "macos": "-apple-darwin",
+    "windows": "-pc-windows-msvc",
+}[_OS]
+
+_BINARYEN_ARCH = "aarch64" if _ARCH == "arm64" and _OS == "linux" else _ARCH
+_BINARYEN_PLATFORM = _BINARYEN_ARCH + "-" + _OS
+_LLVM_VERSION, _LLVM_ARCHIVE, _LLVM_SHA256 = LLVM_RELEASES[_SDK_PLATFORM]
+
+_NODE_PLATFORM = ("arm64" if _ARCH == "arm64" else "x64")
+_NODE_PLATFORM = {"linux": "linux", "macos": "darwin", "windows": "win"}[_OS] + "-" + _NODE_PLATFORM
+
+http_archive(
+    name = "llvm",
+    urls = ["https://github.com/llvm/llvm-project/releases/download/llvmorg-{}/{}.tar.xz".format(_LLVM_VERSION, _LLVM_ARCHIVE)],
+    sha256 = _LLVM_SHA256,
+    strip_prefix = _LLVM_ARCHIVE,
+    # Retain Clang's nested runtime archives, not LLVM's development libraries.
+    excludes = [r"^[^/]+/lib/[^/]+\.a$", r".*/include/llvm.*", r".*/share/.*"],
+    visibility = ["PUBLIC"],
+)
+
+llvm_tools(name = "llvm-tools", archive = ":llvm")
+
+http_archive(
+    name = "rust-compiler",
+    urls = ["https://static.rust-lang.org/dist/{}/rustc-{}-{}.tar.xz".format(RUST_DATE, RUST_VERSION, _HOST_TRIPLE)],
+    sha256 = RUSTC_SHA256[_HOST_TRIPLE],
+    strip_prefix = "rustc-{}-{}/rustc".format(RUST_VERSION, _HOST_TRIPLE),
+)
+
+http_archive(
+    name = "rust-std",
+    urls = ["https://static.rust-lang.org/dist/{}/rust-std-{}-{}.tar.xz".format(RUST_DATE, RUST_VERSION, _HOST_TRIPLE)],
+    sha256 = RUST_STD_SHA256[_HOST_TRIPLE],
+    strip_prefix = "rust-std-{}-{}/rust-std-{}".format(RUST_VERSION, _HOST_TRIPLE, _HOST_TRIPLE),
+)
+
+http_archive(
+    name = "rust-std-wasi",
+    urls = ["https://static.rust-lang.org/dist/{}/rust-std-{}-wasm32-wasip2.tar.xz".format(RUST_DATE, RUST_VERSION)],
+    sha256 = RUST_STD_SHA256["wasm32-wasip2"],
+    strip_prefix = "rust-std-{}-wasm32-wasip2/rust-std-wasm32-wasip2".format(RUST_VERSION),
+)
+
+http_archive(
+    name = "clippy-dist",
+    urls = ["https://static.rust-lang.org/dist/{}/clippy-{}-{}.tar.xz".format(RUST_DATE, RUST_VERSION, _HOST_TRIPLE)],
+    sha256 = CLIPPY_SHA256[_HOST_TRIPLE],
+    strip_prefix = "clippy-{}-{}/clippy-preview".format(RUST_VERSION, _HOST_TRIPLE),
+)
+
+archive_binary(
+    name = "clippy-driver",
+    archive = ":clippy-dist",
+    path = "bin/clippy-driver" + (".exe" if _OS == "windows" else ""),
+)
+
+command_alias(
+    name = "clippy",
+    exe = ":clippy-driver",
+    env = {
+        "PATH": "$(location :rust-compiler)/bin;%PATH%",
+    } if _OS == "windows" else {
+        "LD_LIBRARY_PATH": "$(location :rust-compiler)/lib",
+        "DYLD_LIBRARY_PATH": "$(location :rust-compiler)/lib",
+    },
+)
+
+http_archive(
+    name = "node-dist",
+    urls = ["https://nodejs.org/dist/v{}/node-v{}-{}.{}".format(NODE_VERSION, NODE_VERSION, _NODE_PLATFORM, "zip" if _OS == "windows" else "tar.xz")],
+    sha256 = NODE_SHA256[_NODE_PLATFORM],
+    strip_prefix = "node-v{}-{}".format(NODE_VERSION, _NODE_PLATFORM),
+)
+
+archive_binary(
+    name = "node",
+    archive = ":node-dist",
+    path = "node.exe" if _OS == "windows" else "bin/node",
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "wasi-sdk",
+    urls = ["https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-{}/wasi-sdk-{}-{}.tar.gz".format(WASI_SDK_VERSION.split(".")[0], WASI_SDK_VERSION, _SDK_PLATFORM)],
+    sha256 = WASI_SDK_SHA256[_SDK_PLATFORM],
+    strip_prefix = "wasi-sdk-{}-{}".format(WASI_SDK_VERSION, _SDK_PLATFORM),
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "binaryen",
+    urls = ["https://github.com/WebAssembly/binaryen/releases/download/version_{}/binaryen-version_{}-{}.tar.gz".format(BINARYEN_VERSION, BINARYEN_VERSION, _BINARYEN_PLATFORM)],
+    sha256 = BINARYEN_SHA256[_BINARYEN_PLATFORM],
+    strip_prefix = "binaryen-version_" + BINARYEN_VERSION,
+)
+
+archive_binary(
+    name = "wasm-opt",
+    archive = ":binaryen",
+    path = "bin/wasm-opt" + (".exe" if _OS == "windows" else ""),
+    visibility = ["PUBLIC"],
+)
+
+_TRIPLE = select({
+    "config//os:wasi": "wasm32-wasip2",
+    "config//os:linux": select({
+        "config//cpu:arm64": "aarch64-unknown-linux-gnu",
+        "config//cpu:x86_64": "x86_64-unknown-linux-gnu",
+    }),
+    "config//os:macos": select({
+        "config//cpu:arm64": "aarch64-apple-darwin",
+        "config//cpu:x86_64": "x86_64-apple-darwin",
+    }),
+    "config//os:windows": "x86_64-pc-windows-msvc",
+})
+
+_RUST_FLAGS = profile_select(
+    dev = ["-Cdebuginfo=line-tables-only", "-Copt-level=0", "-Cdebug-assertions=on", "-Coverflow-checks=on"],
+    test = ["-Cdebuginfo=line-tables-only", "-Copt-level=3", "-Cdebug-assertions=on", "-Coverflow-checks=on"],
+    release = ["-Cdebuginfo=0", "-Copt-level=3", "-Cdebug-assertions=off", "-Coverflow-checks=off", "-Cembed-bitcode=yes"],
+)
+
+downloaded_rust_toolchain(
+    name = "rust",
+    compiler = ":rust-compiler",
+    clippy = ":clippy",
+    native_std = ":rust-std",
+    wasi_std = ":rust-std-wasi",
+    host_triple = _HOST_TRIPLE,
+    target_triple = _TRIPLE,
+    rustc_flags = _RUST_FLAGS + select({
+        "root//platforms:release_runtime_size": ["-Copt-level=z"],
+        "DEFAULT": [],
+    }),
+    visibility = ["PUBLIC"],
+)
+
+cxx_tools_info_toolchain(
+    name = "cxx-host",
+    cxx_tools_info = ":llvm-tools",
+    c_flags = [] if _OS == "windows" else ["-fPIC"],
+    cxx_flags = [] if _OS == "windows" else ["-fPIC"],
+)
+
+wasi_cxx_toolchain(
+    name = "cxx-wasi",
+    sdk = ":wasi-sdk",
+)
+
+toolchain_alias(
+    name = "cxx",
+    actual = select({
+        "config//os:wasi": ":cxx-wasi",
+        "DEFAULT": ":cxx-host",
+    }),
+    visibility = ["PUBLIC"],
+)
+
+system_genrule_toolchain(name = "genrule", visibility = ["PUBLIC"])
+system_python_toolchain(name = "python", visibility = ["PUBLIC"])
+system_python_bootstrap_toolchain(name = "python_bootstrap", visibility = ["PUBLIC"])
+
+noop_test_toolchain(name = "test", visibility = ["PUBLIC"])
+remote_test_execution_toolchain(name = "remote_test_execution", visibility = ["PUBLIC"])

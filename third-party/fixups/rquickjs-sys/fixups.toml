@@ -1,0 +1,7 @@
+[buildscript.run]
+rustc_link_search = true
+rustc_link_lib = true
+
+['cfg(target_os = "wasi")'.buildscript.run.env]
+RQUICKJS_SYS_NO_WASI_SDK = "1"
+BINDGEN_EXTRA_CLANG_ARGS = "--target=wasm32-wasip2 --sysroot=$(location toolchains//:wasi-sdk)/share/wasi-sysroot"

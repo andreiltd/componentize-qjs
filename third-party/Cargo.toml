@@ -1,0 +1,50 @@
+# External dependency roots for the handwritten first-party Buck targets.
+
+[workspace]
+
+[package]
+name = "buck-third-party"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+anyhow = "1.0"
+assert_cmd = "2.0"
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+flate2 = "1.1"
+glob = "0.3"
+heck = "0.5"
+indexmap = "2"
+napi = { version = "3", features = ["tokio_rt"] }
+napi-build = "2"
+napi-derive = "3"
+num_enum = { version = "0.7", default-features = false }
+oxc_allocator = "0.147.0"
+oxc_codegen = "0.147.0"
+oxc_minifier = "0.147.0"
+oxc_parser = "0.147.0"
+oxc_resolver = "11.21.0"
+oxc_span = "0.147.0"
+predicates = "3.1"
+quickcheck = "1"
+rquickjs = { version = "0.13", default-features = false, features = ["bindgen", "disable-assertions", "loader", "std", "macro"] }
+smallvec = "1"
+tar = "0.4"
+tempfile = "3.13"
+tokio = { version = "1", default-features = false, features = ["rt", "macros"] }
+ureq = "3"
+wasi-preview1-component-adapter-provider = "47"
+wasm-compose = { version = "0.258", default-features = false }
+wasmtime = { version = "47", features = ["component-model", "async"] }
+wasmtime-wasi = { version = "47", default-features = false, features = ["p2", "p3"] }
+wasmtime-wizer = { version = "47", features = ["component-model", "wasmtime"] }
+wit-bindgen = "0.61"
+wit-component = { version = "0.258", features = ["dummy-module"] }
+wit-dylib = "0.258"
+wit-dylib-ffi = { version = "0.1.0", git = "https://github.com/bytecodealliance/wasm-tools", tag = "v1.258.0", default-features = false, features = ["async-raw"] }
+wit-parser = "0.258"
