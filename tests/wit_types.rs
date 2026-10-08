@@ -1789,3 +1789,26 @@ fn test_root_level_flags() {
         "root-level flags should round-trip through the component"
     );
 }
+
+#[test]
+fn test_bigint_integer_returns_preserve_all_64_bits() {
+    TestCase::new()
+        .wit(
+            r#"package test:bigint-return;
+            world test {
+                export unsigned: func() -> u64;
+                export signed: func() -> s64;
+            }"#,
+        )
+        .script(
+            r#"
+            export function unsigned() { return 18446744073709551615n; }
+            export function signed() { return -9223372036854775808n; }
+        "#,
+        )
+        .expect_call("unsigned", vec![], Val::U64(u64::MAX))
+        .expect_call("signed", vec![], Val::S64(i64::MIN))
+        .build()
+        .unwrap()
+        .run();
+}

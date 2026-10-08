@@ -2590,3 +2590,52 @@ async fn test_host_stream_to_guest() {
 
     assert_eq!(count, 5);
 }
+
+#[tokio::test]
+async fn test_pending_export_is_settled_by_a_sibling_export() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"package test:export-ownership;
+            world test {
+                export wait: async func() -> u32;
+                export settle: async func(value: u32) -> u32;
+            }"#,
+        )
+        .script(
+            r#"
+            let resolvePending;
+            export function wait() {
+                return new Promise(resolve => { resolvePending = resolve; });
+            }
+            export async function settle(value) {
+                resolvePending(value);
+                await Promise.resolve();
+                return value + 1;
+            }
+        "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+    let (instance, store) = instance.parts();
+    let wait = instance
+        .get_typed_func::<(), (u32,)>(&mut *store, "wait")
+        .unwrap();
+    let settle = instance
+        .get_typed_func::<(u32,), (u32,)>(&mut *store, "settle")
+        .unwrap();
+    // Start wait first, then settle its promise from another canonical task.
+    let pending = wait.start_call_concurrent(&mut *store, ()).unwrap();
+    let results = store
+        .as_context_mut()
+        .run_concurrent(async |accessor| {
+            let (waiting, settling) = tokio::join!(
+                wait.finish_call_concurrent(accessor, pending),
+                settle.call_concurrent(accessor, (42,)),
+            );
+            (waiting.unwrap(), settling.unwrap())
+        })
+        .await
+        .unwrap();
+    assert_eq!(results, ((42,), (43,)));
+}
