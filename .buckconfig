@@ -1,0 +1,29 @@
+[cells]
+root = .
+prelude = prelude
+toolchains = toolchains
+none = none
+
+[cell_aliases]
+config = prelude
+ovr_config = prelude
+fbcode = none
+fbsource = none
+fbcode_macros = none
+buck = none
+
+[external_cells]
+prelude = bundled
+
+[parser]
+target_platform_detector_spec = target:root//...->root//platforms:dev target:toolchains//...->root//platforms:dev
+
+[build]
+execution_platforms = prelude//platforms:default
+
+[project]
+ignore = .git, target, .research_tmp, npm/node_modules
+
+[rust]
+default_edition = 2024
+remap_src_paths = yes

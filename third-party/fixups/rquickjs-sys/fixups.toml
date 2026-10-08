@@ -1,0 +1,6 @@
+[buildscript.run]
+rustc_link_search = true
+rustc_link_lib = true
+
+['cfg(target_os = "wasi")'.buildscript.run.env]
+RQUICKJS_SYS_NO_WASI_SDK = "1"
