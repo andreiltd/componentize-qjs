@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/andreiltd/componentize-qjs/compare/componentize-qjs-v0.4.5...componentize-qjs-v0.5.0) - 2026-10-09
+
+### Bug Fixes
+
+- [**breaking**] `u64` and `s64` narrowing ([#87](https://github.com/andreiltd/componentize-qjs/pull/87))
+
+### Refactoring
+
+- simplify runtime internals and artifact builds ([#85](https://github.com/andreiltd/componentize-qjs/pull/85))
+
 ## [0.4.5](https://github.com/andreiltd/componentize-qjs/compare/componentize-qjs-v0.4.4...componentize-qjs-v0.4.5) - 2026-09-16
 
 ### Bug Fixes
