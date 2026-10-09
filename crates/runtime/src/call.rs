@@ -13,7 +13,9 @@ use crate::{QjsCallContext, with_ctx};
 
 use rquickjs::class::Class;
 use rquickjs::function::This;
-use rquickjs::{CatchResultExt, Coerced, Constructor, Function, IntoJs, Persistent, Symbol, Value};
+use rquickjs::{
+    BigInt, CatchResultExt, Coerced, Constructor, Function, IntoJs, Persistent, Symbol, Value,
+};
 use smallvec::SmallVec;
 use wit_dylib_ffi::{
     Call, Enum, Flags, Future, List, Map, Record, Resource, Stream, Tuple, Type, Variant,
@@ -85,11 +87,27 @@ impl Call for QjsCallContext {
     }
 
     fn pop_u64(&mut self) -> u64 {
-        pop_with(self, |v| v.get().expect("expected number"))
+        pop_with(self, |v| {
+            assert!(v.is_big_int(), "expected bigint");
+            let mut result = 0;
+            let status = unsafe {
+                rquickjs::qjs::JS_ToBigUint64(v.ctx().as_raw().as_ptr(), &mut result, v.as_raw())
+            };
+            assert_eq!(status, 0, "failed to read bigint as u64");
+            result
+        })
     }
 
     fn pop_s64(&mut self) -> i64 {
-        pop_with(self, |v| v.get().expect("expected number"))
+        pop_with(self, |v| {
+            assert!(v.is_big_int(), "expected bigint");
+            let mut result = 0;
+            let status = unsafe {
+                rquickjs::qjs::JS_ToBigInt64(v.ctx().as_raw().as_ptr(), &mut result, v.as_raw())
+            };
+            assert_eq!(status, 0, "failed to read bigint as s64");
+            result
+        })
     }
 
     fn pop_f32(&mut self) -> f32 {
@@ -474,11 +492,15 @@ impl Call for QjsCallContext {
     }
 
     fn push_u64(&mut self, val: u64) {
-        push_with(self, |ctx| val.into_js(ctx).unwrap());
+        push_with(self, |ctx| {
+            BigInt::from_u64(ctx.clone(), val).unwrap().into_value()
+        });
     }
 
     fn push_s64(&mut self, val: i64) {
-        push_with(self, |ctx| val.into_js(ctx).unwrap());
+        push_with(self, |ctx| {
+            BigInt::from_i64(ctx.clone(), val).unwrap().into_value()
+        });
     }
 
     fn push_f32(&mut self, val: f32) {

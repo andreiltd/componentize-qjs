@@ -186,7 +186,7 @@ a project root that contains shared files or `node_modules`.
 | `bool` | `boolean` | |
 | `u8`, `u16`, `u32` | `number` | |
 | `s8`, `s16`, `s32` | `number` | |
-| `u64`, `s64` | `number` | Precision limited to 2⁵³ (Number.MAX_SAFE_INTEGER) |
+| `u64`, `s64` | `BigInt` | |
 | `f32`, `f64` | `number` | |
 | `char` | `string` | Must be exactly one Unicode scalar value |
 | `string` | `string` | |
