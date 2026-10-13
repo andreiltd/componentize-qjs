@@ -1,0 +1,12 @@
+[buck2]
+digest_algorithms = SHA256
+
+[build]
+execution_platforms = root//platforms:cache
+
+[buck2_re_client]
+engine_address = remote.buildbuddy.io
+action_cache_address = remote.buildbuddy.io
+cas_address = remote.buildbuddy.io
+tls = true
+http_headers = x-buildbuddy-api-key:$BUILDBUDDY_API_KEY

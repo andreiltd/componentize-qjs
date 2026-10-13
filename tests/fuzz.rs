@@ -11,7 +11,6 @@
 //! 4. Assert: `(after_round2 - after_round1)` should be near zero.
 mod common;
 
-use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 use quickcheck::{Arbitrary, Gen, TestResult, quickcheck};
@@ -245,11 +244,9 @@ mod fuzz {
     fn wasm_bytes() -> &'static Vec<u8> {
         static WASM: OnceLock<Vec<u8>> = OnceLock::new();
         WASM.get_or_init(|| {
-            let wit = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wit/fuzz");
-            let js = std::fs::read_to_string(
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/js/fuzz.js"),
-            )
-            .expect("failed to read tests/js/fuzz.js");
+            let wit = common::test_root().join("tests/wit/fuzz");
+            let js = std::fs::read_to_string(common::test_root().join("tests/js/fuzz.js"))
+                .expect("failed to read tests/js/fuzz.js");
 
             let opts = ComponentizeOpts {
                 wit_path: &wit,
@@ -450,11 +447,9 @@ mod fuzz_async {
     fn wasm_bytes() -> &'static Vec<u8> {
         static WASM: OnceLock<Vec<u8>> = OnceLock::new();
         WASM.get_or_init(|| {
-            let wit = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wit/async-fuzz");
-            let js = std::fs::read_to_string(
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/js/async-fuzz.js"),
-            )
-            .expect("failed to read tests/js/async-fuzz.js");
+            let wit = common::test_root().join("tests/wit/async-fuzz");
+            let js = std::fs::read_to_string(common::test_root().join("tests/js/async-fuzz.js"))
+                .expect("failed to read tests/js/async-fuzz.js");
 
             let opts = ComponentizeOpts {
                 wit_path: &wit,

@@ -7,8 +7,20 @@ on:
 permissions: {}
 
 jobs:
+  validate:
+    name: Validate both build systems
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      checkout_ref: ${{ github.sha }}
+      validation_context: release-plz
+    secrets:
+      BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+
   release-plz-release:
     name: Release-plz release
+    needs: validate
     runs-on: ubuntu-latest
     environment: crates-io
     permissions:
@@ -92,6 +104,8 @@ jobs:
     uses: ./.github/workflows/cli-release.yml
     with:
       release_tag: ${{ needs.release-plz-release.outputs.release_tag }}
+    secrets:
+      BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
 
   publish-runtime:
     name: Publish runtime Wasm
@@ -105,6 +119,8 @@ jobs:
     uses: ./.github/workflows/runtime-publish.yml
     with:
       release_tag: ${{ needs.release-plz-release.outputs.release_tag }}
+    secrets:
+      BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
 
   publish-npm:
     name: Publish npm packages
@@ -116,6 +132,8 @@ jobs:
     uses: ./.github/workflows/npm-publish.yml
     with:
       release_tag: ${{ needs.release-plz-release.outputs.release_tag }}
+    secrets:
+      BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
 
   release-plz-pr:
     name: Release-plz PR

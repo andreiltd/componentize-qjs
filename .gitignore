@@ -1,2 +1,7 @@
 target/
 *.wasm
+/buck-out/
+/.buckconfig.local
+/prelude/
+__pycache__/
+*.pyc

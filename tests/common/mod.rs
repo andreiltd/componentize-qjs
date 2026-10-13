@@ -317,8 +317,20 @@ impl ComponentInstance {
     }
 }
 
+/// Resolve the Buck-provided CLI, retaining Cargo's normal binary discovery.
 pub fn componentize_qjs() -> assert_cmd::Command {
+    if let Some(path) = std::env::var_os("COMPONENTIZE_QJS_TEST_CLI") {
+        return assert_cmd::Command::new(path);
+    }
+
     assert_cmd::cargo::cargo_bin_cmd!("componentize-qjs")
+}
+
+/// Resolve declared Buck fixtures at test time, or Cargo's source-tree fixtures.
+pub fn test_root() -> PathBuf {
+    std::env::var_os("COMPONENTIZE_QJS_TEST_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
 }
 
 pub struct AsyncComponentInstance {
@@ -452,5 +464,5 @@ pub fn run_cli_build(wit: &str, js: &str, extra_args: &[&str]) -> (PathBuf, Temp
 }
 
 pub fn wasi_wit_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wit")
+    test_root().join("tests/wit")
 }

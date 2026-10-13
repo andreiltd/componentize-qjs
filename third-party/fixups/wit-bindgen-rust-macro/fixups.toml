@@ -1,0 +1,2 @@
+buildscript.run = true
+env = { DEBUG_OUTPUT_DIR = "$(location :wit-bindgen-rust-macro-0.61-build-script-run[out_dir])" }
