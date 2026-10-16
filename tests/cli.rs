@@ -75,10 +75,89 @@ fn test_cli_output() {
     );
 
     let wasm = fs::read(&output).unwrap();
+    let component = Component::new(engine(), wasm).expect("should compile component");
+    assert!(
+        component.get_export(None, "init").is_none(),
+        "snapshot initialization must not be exposed at runtime"
+    );
     let mut inst =
-        ComponentInstance::from_wasm(wasm, vec![], vec![]).expect("should instantiate component");
+        ComponentInstance::from_component(&component).expect("should instantiate component");
 
     assert_eq!(inst.call1("add", &[Val::U32(3), Val::U32(4)]), Val::U32(7));
+}
+
+#[test]
+fn test_cli_default_runtime_preserves_javascript_builtins() {
+    let (output, _dir) = run_cli_build(
+        "package test:builtins; world builtins { export check: func(value: u64) -> u64; }",
+        r#"
+            const saved = new Uint8Array([1, 2, 3]);
+
+            export function check(value) {
+                const object = JSON.parse('{"value": 42}');
+                const proxy = new Proxy(object, { get: (target, key) => target[key] });
+                const values = new Map([["answer", proxy.value]]);
+                const weak = new WeakRef(object);
+
+                if (
+                    eval("21 * 2") !== 42 ||
+                    new Function("return 42")() !== 42 ||
+                    !/answer/i.test("ANSWER") ||
+                    values.get("answer") !== 42 ||
+                    new Set([1, 1, 2]).size !== 2 ||
+                    new Date(0).toISOString() !== "1970-01-01T00:00:00.000Z" ||
+                    Math.sqrt(144) !== 12 ||
+                    weak.deref() !== object
+                ) {
+                    throw new Error("runtime feature check failed");
+                }
+                return value + BigInt(saved.reduce((sum, byte) => sum + byte, 0) - 5);
+            }
+        "#,
+        &[],
+    );
+
+    let mut instance = ComponentInstance::from_wasm(fs::read(output).unwrap(), vec![], vec![])
+        .expect("should instantiate the full default runtime");
+
+    assert_eq!(
+        instance.call1("check", &[Val::U64(u64::MAX - 1)]),
+        Val::U64(u64::MAX)
+    );
+}
+
+#[test]
+fn test_cli_empty_world() {
+    let (output, _dir) = run_cli_build("package test:empty; world empty {}", "export {};", &[]);
+    ComponentInstance::from_wasm(fs::read(output).unwrap(), vec![], vec![])
+        .expect("should instantiate a snapshot without WIT initialization");
+}
+
+#[test]
+fn test_cli_preserves_exports_with_initializer_like_names() {
+    let (output, _dir) = run_cli_build(
+        r#"package test:exports;
+           world exports {
+               export componentize-qjs-init: func() -> u32;
+               export componentize-qjs-init-x: func() -> u32;
+               export wizer-initialize: func() -> u32;
+           }"#,
+        r#"
+            export function componentizeQjsInit() { return 41; }
+            export function componentizeQjsInitX() { return 42; }
+            export function wizerInitialize() { return 43; }
+        "#,
+        &[],
+    );
+    let mut instance = ComponentInstance::from_wasm(fs::read(output).unwrap(), vec![], vec![])
+        .expect("should instantiate component with initializer-like export names");
+    for (name, expected) in [
+        ("componentize-qjs-init", 41),
+        ("componentize-qjs-init-x", 42),
+        ("wizer-initialize", 43),
+    ] {
+        assert_eq!(instance.call1(name, &[]), Val::U32(expected));
+    }
 }
 
 #[test]

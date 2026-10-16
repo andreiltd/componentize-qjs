@@ -45,8 +45,14 @@ wasmtime.workspace = true
 wasmtime-wasi.workspace = true
 wasmtime-wizer = { version = "47", features = ["component-model", "wasmtime"] }
 wasm-compose = { version = "0.258", default-features = false }
+wasm-encoder = { version = "0.258", features = ["wasmparser"] }
+wasmparser = "0.258"
+walrus = "0.27.2"
 indexmap = "2"
 tempfile = "3"
+
+[dev-dependencies]
+wat = "1.258"
 
 [build-dependencies]
 anyhow.workspace = true

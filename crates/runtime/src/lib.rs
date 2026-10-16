@@ -50,6 +50,14 @@ mod init {
     export!(InitImpl);
 }
 
+// Version 1: NUL-terminated exports whose bodies are only needed before Wizer
+// snapshots this runtime, including the linker-generated relocation routine.
+#[cfg(target_family = "wasm")]
+#[used]
+#[unsafe(link_section = "componentize-qjs:init-only")]
+static INIT_ONLY_EXPORTS: [u8; 67] =
+    *b"\x01init\0cabi_post_init\0wit_dylib_initialize\0__wasm_apply_data_relocs\0";
+
 // Global JS runtime and context.
 static JS_STATE: GlobalJsState = GlobalJsState(OnceCell::new());
 
@@ -331,11 +339,15 @@ fn init_js(
     Ok(())
 }
 
-/// Delegates to `JsState::with_ctx`.
+/// Access the initialized context without retaining its constructor after Wizer.
 pub(crate) fn with_ctx<F, R>(f: F) -> R
 where
     F: FnOnce(&rquickjs::Ctx<'_>) -> R,
     R: 'static,
 {
-    JsState::get_or_init().with_ctx(f)
+    JS_STATE
+        .0
+        .get()
+        .expect("JS runtime not initialized")
+        .with_ctx(f)
 }
