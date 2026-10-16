@@ -73,6 +73,7 @@ opt-size = ["componentize-qjs/opt-size"]
 component-model-async = ["componentize-qjs/component-model-async"]
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["time"] }
 assert_cmd = "2.0"
 predicates = "3.1"
 quickcheck = "1"

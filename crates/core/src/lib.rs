@@ -14,7 +14,10 @@ use bytes::Bytes;
 use resolver::Resolver;
 use stubwasi::{stub_internal_imports, stub_wasi_imports};
 use wasi_preview1_component_adapter_provider::WASI_SNAPSHOT_PREVIEW1_REACTOR_ADAPTER;
-use wasmtime::component::{Component as WasmtimeComponent, Linker, ResourceTable};
+use wasmtime::component::types::ComponentItem;
+use wasmtime::component::{
+    Component as WasmtimeComponent, Linker, LinkerInstance, ResourceTable, ResourceType,
+};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::p2::pipe::{MemoryInputPipe, MemoryOutputPipe};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
@@ -213,6 +216,85 @@ fn runtime_wasm(runtime: Runtime<'_>) -> &[u8] {
     }
 }
 
+/// Supply placeholders so Wizer can instantiate the component and evaluate JS.
+/// Real WASI and module-loader definitions replace these placeholders afterward;
+/// any remaining host function traps if called during initialization.
+fn define_unknown_imports_as_traps(
+    linker: &mut Linker<Ctx>,
+    engine: &Engine,
+    component: &WasmtimeComponent,
+) -> Result<()> {
+    let mut resources = Vec::new();
+    for (name, item) in component.component_type().imports(engine) {
+        trap_import(
+            &mut linker.root(),
+            engine,
+            name,
+            name,
+            item.ty,
+            &mut resources,
+        )?;
+    }
+    Ok(())
+}
+
+/// Stub one import while preserving the types Wasmtime checks during linking.
+/// `resources` is shared across namespaces to recognize aliases of earlier imports.
+fn trap_import(
+    linker: &mut LinkerInstance<'_, Ctx>,
+    engine: &Engine,
+    name: &str,
+    path: &str,
+    ty: ComponentItem,
+    resources: &mut Vec<ResourceType>,
+) -> Result<()> {
+    match ty {
+        ComponentItem::ComponentInstance(instance) => {
+            // Imported interfaces are namespaces whose members also need stubs.
+            let mut nested = linker.instance(name)?;
+            for (export, item) in instance.exports(engine) {
+                trap_import(
+                    &mut nested,
+                    engine,
+                    export,
+                    &format!("{path}#{export}"),
+                    item.ty,
+                    resources,
+                )?;
+            }
+        }
+        ComponentItem::ComponentFunc(func) => {
+            let message = format!("unknown import: `{path}` has not been defined");
+            // Even a trapping function must match the import's sync/async ABI.
+            if func.async_() {
+                linker.func_new_concurrent(name, move |_, _, _, _| {
+                    let message = message.clone();
+                    Box::pin(async move { Err(wasmtime::Error::msg(message)) })
+                })?;
+            } else {
+                linker.func_new(name, move |_, _, _, _| {
+                    Err(wasmtime::Error::msg(message.clone()))
+                })?;
+            }
+        }
+        ComponentItem::Resource(ty) => {
+            // Give unrelated resources distinct identities. Leave equality aliases
+            // absent so Wasmtime follows the original, including later WASI overrides.
+            if !resources.contains(&ty) {
+                let resource = ResourceType::host_dynamic(u32::try_from(resources.len())?);
+                resources.push(ty);
+                // Trapping constructors cannot create values needing destruction.
+                linker.resource(name, resource, |_, _| Ok(()))?;
+            }
+        }
+        ComponentItem::Component(_) | ComponentItem::Module(_) => {
+            anyhow::bail!("unable to define component or module import `{path}` as a trap");
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 async fn wizer_init(
     component: &[u8],
     shim: &str,
@@ -244,7 +326,7 @@ async fn wizer_init(
 
     let mut linker = Linker::new(&engine);
     linker.allow_shadowing(true);
-    linker.define_unknown_imports_as_traps(&comp)?;
+    define_unknown_imports_as_traps(&mut linker, &engine, &comp)?;
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
     wasmtime_wasi::p3::add_to_linker(&mut linker)?;
 
@@ -318,4 +400,74 @@ fn register_module_loader(linker: &mut Linker<Ctx>, resolver: Option<Resolver>) 
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initialization_stubs_preserve_resource_identity_and_async_types() {
+        let mut config = Config::new();
+        config.wasm_component_model_async(true);
+        let engine = Engine::new(&config).unwrap();
+        let component = WasmtimeComponent::new(
+            &engine,
+            r#"(component
+                (import "original" (type $original (sub resource)))
+                (import "unrelated" (type (sub resource)))
+                (import "alias" (type (eq $original)))
+                (type $resources (instance
+                    (export "input-stream" (type (sub resource)))
+                ))
+                (import "one" (instance (type $resources)))
+                (import "two" (instance (type $resources)))
+                (type $async (func async))
+                (import "root" (func (type $async)))
+                (import "nested" (instance
+                    (export "inner" (instance
+                        (type $async (func async))
+                        (export "call" (func (type $async)))
+                    ))
+                ))
+            )"#,
+        )
+        .unwrap();
+        let mut linker = Linker::<Ctx>::new(&engine);
+        linker.allow_shadowing(true);
+        define_unknown_imports_as_traps(&mut linker, &engine, &component).unwrap();
+        let resource = |ty: &wasmtime::component::types::Component, name| {
+            let ComponentItem::Resource(resource) = ty.get_import(&engine, name).unwrap().ty else {
+                panic!("expected resource");
+            };
+            resource
+        };
+        let stubs = linker.substituted_component_type(&component).unwrap();
+        assert_ne!(resource(&stubs, "original"), resource(&stubs, "unrelated"));
+        assert_eq!(resource(&stubs, "original"), resource(&stubs, "alias"));
+        let instance_resource = |name| {
+            let ComponentItem::ComponentInstance(instance) =
+                stubs.get_import(&engine, name).unwrap().ty
+            else {
+                panic!("expected instance");
+            };
+            let ComponentItem::Resource(resource) =
+                instance.get_export(&engine, "input-stream").unwrap().ty
+            else {
+                panic!("expected resource");
+            };
+            resource
+        };
+        assert_ne!(instance_resource("one"), instance_resource("two"));
+        // Real host definitions replace stubs after discovery, as WASI does.
+        let host = ResourceType::host::<wasmtime_wasi::p2::DynInputStream>();
+        linker
+            .root()
+            .resource("original", host, |_, _| Ok(()))
+            .unwrap();
+        let ty = linker.substituted_component_type(&component).unwrap();
+        assert_eq!(resource(&ty, "original"), host);
+        assert_eq!(resource(&ty, "alias"), host);
+        assert_ne!(resource(&ty, "unrelated"), host);
+    }
 }

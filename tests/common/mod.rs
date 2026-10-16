@@ -168,7 +168,8 @@ impl TestCase {
         Ok(Component::new(async_engine(), wasm)?)
     }
 
-    async fn componentize(&self) -> anyhow::Result<Vec<u8>> {
+    /// Produce bytes for integration tests that need a custom engine configuration.
+    pub async fn componentize(&self) -> anyhow::Result<Vec<u8>> {
         let dir = TempDir::new()?;
 
         let wit_path = if let Some(ref wit_dir) = self.wit_dir {

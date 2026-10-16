@@ -1789,3 +1789,42 @@ fn test_root_level_flags() {
         "root-level flags should round-trip through the component"
     );
 }
+
+#[test]
+fn test_bigint_integer_returns_preserve_all_64_bits() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"package test:bigint-return;
+            world test {
+                export unsigned: func() -> u64;
+                export signed: func() -> s64;
+                export echo-unsigned: func(value: u64) -> u64;
+                export echo-signed: func(value: s64) -> s64;
+            }"#,
+        )
+        .script(
+            r#"
+            export function unsigned() { return 18446744073709551615n; }
+            export function signed() { return -9223372036854775808n; }
+            export function echoUnsigned(value) { return value; }
+            export function echoSigned(value) { return value; }
+        "#,
+        )
+        .expect_call("unsigned", vec![], Val::U64(u64::MAX))
+        .expect_call("signed", vec![], Val::S64(i64::MIN))
+        .build()
+        .unwrap();
+    instance.run();
+    for value in [0, 1, (1 << 53) + 1, 1 << 63, u64::MAX] {
+        assert_eq!(
+            instance.call1("echo-unsigned", &[Val::U64(value)]),
+            Val::U64(value)
+        );
+    }
+    for value in [i64::MIN, -(1 << 53) - 1, -1, 0, (1 << 53) + 1, i64::MAX] {
+        assert_eq!(
+            instance.call1("echo-signed", &[Val::S64(value)]),
+            Val::S64(value)
+        );
+    }
+}

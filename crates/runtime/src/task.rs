@@ -2,6 +2,8 @@
 #![allow(unsafe_code)]
 
 use std::cell::RefCell;
+use std::rc::{Rc, Weak};
+use wit_dylib_ffi::ExportFunction;
 
 use rquickjs::class::Class;
 use rquickjs::function::This;
@@ -129,21 +131,91 @@ impl CancelRequest {
     }
 }
 
-/// Inflight async operations for a single export call.
-///
-/// Every entry is joined to `waitable_set` while the host may wake it.
-/// Removing an entry first unjoins its handle so the set and the ownership map
-/// remain synchronized.
+/// Settlement recorded by JS jobs and consumed only by the owning export.
+#[derive(Default)]
+pub(crate) struct ExportCompletion {
+    result: Option<(ExportFunction, Persistent<Value<'static>>, bool)>,
+    wakeup: Option<u32>,
+    settled: bool,
+}
+
+impl ExportCompletion {
+    pub(crate) fn settle(
+        &mut self,
+        func: ExportFunction,
+        value: Persistent<Value<'static>>,
+        rejected: bool,
+    ) {
+        if self.settled {
+            return;
+        }
+        self.settled = true;
+        self.result = Some((func, value, rejected));
+        if let Some(writer) = self.wakeup {
+            // The owner keeps one unit read pending until completion/cancellation.
+            let code = unsafe { async_lower_stream_write_unit(writer, std::ptr::null(), 1) };
+            assert_eq!(code, 1 << 4, "export wakeup must complete immediately");
+        }
+    }
+}
+
+/// Inflight operations for one export. Every pending handle is joined to the
+/// waitable set until it is removed or temporarily unjoined for cancellation.
 #[derive(Default)]
 struct TaskInner {
+    completion: Rc<RefCell<ExportCompletion>>,
     pending: DetHashMap<u32, PendingEntry>,
     waitable_set: Option<u32>,
+    wakeup: Option<u32>,
     export_call: Option<Box<QjsCallContext>>,
     cancel: bool,
     returned: bool,
 }
 
 impl TaskInner {
+    fn waitable_set(&mut self) -> u32 {
+        *self
+            .waitable_set
+            .get_or_insert_with(|| unsafe { waitable_set_new() })
+    }
+
+    /// Sleep on a private stream so a sibling's JS settlement can wake this task.
+    fn arm_wakeup(&mut self) {
+        if self.wakeup.is_some() {
+            return;
+        }
+        let pair = unsafe { stream_new_unit() };
+        let writer = (pair >> 32) as u32;
+        let reader = pair as u32;
+        let code = unsafe { async_lower_stream_read_unit(reader, std::ptr::null_mut(), 1) };
+        assert!(is_blocked_raw(code), "export wakeup read must block");
+        unsafe { waitable_join(reader, self.waitable_set()) };
+        self.wakeup = Some(reader);
+        self.completion.borrow_mut().wakeup = Some(writer);
+    }
+
+    /// Unjoin before synchronously cancelling, then close both unit endpoints.
+    /// `cancel_read` is false when the host has already delivered the read event.
+    fn close_wakeup(&mut self, cancel_read: bool) {
+        let Some(reader) = self.wakeup.take() else {
+            return;
+        };
+        let writer = self
+            .completion
+            .borrow_mut()
+            .wakeup
+            .take()
+            .expect("missing wakeup writer");
+        unsafe {
+            waitable_join(reader, 0);
+            if cancel_read {
+                stream_cancel_read_unit(reader);
+            }
+            stream_drop_readable_unit(reader);
+            stream_drop_writable_unit(writer);
+        }
+    }
+
     /// Store an operation and join its handle to the lazily-created waitable set.
     fn register(&mut self, handle: u32, pending: Pending) {
         assert!(
@@ -151,11 +223,7 @@ impl TaskInner {
             "operation already pending"
         );
 
-        if self.waitable_set.is_none() {
-            self.waitable_set = Some(unsafe { waitable_set_new() });
-        }
-
-        let set = self.waitable_set.unwrap();
+        let set = self.waitable_set();
         unsafe { waitable_join(handle, set) };
 
         self.pending.insert(
@@ -246,10 +314,16 @@ impl TaskState {
         });
     }
 
+    pub(crate) fn completion(&self) -> Weak<RefCell<ExportCompletion>> {
+        // Late JS settlements must not keep a completed or cancelled task alive.
+        self.with(|inner| Rc::downgrade(&inner.completion))
+    }
+
     pub(crate) fn finish_export(&self) {
         let call = self.with(|inner| {
             assert!(!inner.cancel && !inner.returned, "task already completed");
             inner.returned = true;
+            inner.close_wakeup(true);
             inner.export_call.take()
         });
         drop(call);
@@ -270,6 +344,8 @@ impl TaskState {
     pub(crate) fn cancel(&self, ctx: &Ctx<'_>) -> rquickjs::Result<()> {
         let requests: Vec<_> = self.with(|inner| {
             inner.cancel = true;
+            inner.close_wakeup(true);
+            inner.completion.borrow_mut().settled = true;
             inner
                 .pending
                 .iter()
@@ -290,6 +366,16 @@ impl TaskState {
             }
         }
         Ok(())
+    }
+
+    fn handle_wakeup(&self, handle: u32) -> bool {
+        self.with(|inner| {
+            if inner.wakeup != Some(handle) {
+                return false;
+            }
+            inner.close_wakeup(false);
+            true
+        })
     }
 
     /// Register a pending operation, joining it to the waitable set.
@@ -343,15 +429,46 @@ impl TaskState {
     /// owner remains until the host supplies that pointer to [`Self::restore`].
     pub(crate) fn poll(&self) -> u32 {
         with_ctx(|ctx| {
-            while execute_pending_job(ctx).expect("QuickJS job failed") {
+            loop {
+                while execute_pending_job(ctx).expect("QuickJS job failed") {
+                    drain_resource_drops(ctx);
+                }
                 drain_resource_drops(ctx);
+                // A sibling may have run our settlement callback. Lower and return
+                // the result here, with the owning task restored as the active task.
+                let completed = self.with(|inner| inner.completion.borrow_mut().result.take());
+                if let Some((func, value, rejected)) = completed {
+                    if !self.is_cancelling() {
+                        let boundary = ResultBoundary::new(func.result());
+                        let value = value.restore(ctx).expect("export result restore failed");
+                        let value = if rejected {
+                            boundary.lower_throw(ctx, value)
+                        } else {
+                            boundary.lower_value(ctx, value)
+                        }
+                        .expect("async export result lowering failed");
+                        let mut call = QjsCallContext::default();
+                        if let Some(value) = value {
+                            call.push_value(ctx, value);
+                        }
+                        self.finish_export();
+                        func.call_task_return(&mut call);
+                        call.complete_transfers(1);
+                    }
+                    // Result lowering can start stream/future adapters and queue
+                    // more JS jobs. Drain those before deciding to exit or wait.
+                    continue;
+                }
+                break;
             }
-            drain_resource_drops(ctx);
         });
 
         let mut inner = self.0.borrow_mut().take().expect("no active task state");
 
-        if inner.pending.is_empty() {
+        if !inner.returned && !inner.cancel {
+            inner.arm_wakeup();
+        }
+        if inner.pending.is_empty() && (inner.returned || inner.cancel) {
             drop(inner.export_call.take());
             with_ctx(drain_resource_drops);
 
@@ -364,12 +481,36 @@ impl TaskState {
             }
             CallbackCode::Exit.encode(0)
         } else {
-            let set = inner.waitable_set.expect("pending ops but no waitable set");
+            let set = inner
+                .waitable_set
+                .expect("suspended task has no waitable set");
             let ptr = Box::into_raw(Box::new(inner)) as usize;
 
             unsafe { context_set(u32::try_from(ptr).unwrap()) }
             CallbackCode::Wait.encode(set)
         }
+    }
+}
+
+/// Dispatch host callbacks, including the private inter-export wakeup stream.
+pub(crate) fn handle_event(event: Event) {
+    match event {
+        Event::None => {}
+        Event::Subtask { handle, state } => handle_subtask(handle, state),
+        Event::StreamWrite { handle, result } => streams::handle_write_event(handle, result),
+        Event::StreamRead { handle, result } => {
+            if !with_ctx(|ctx| ctx.task().handle_wakeup(handle)) {
+                streams::handle_read_event(handle, result);
+            }
+        }
+        Event::FutureWrite { handle, result } => futures::handle_write_event(handle, result),
+        Event::FutureRead { handle, result } => futures::handle_read_event(handle, result),
+        Event::TaskCancelled => with_ctx(|ctx| {
+            ctx.task()
+                .cancel(ctx)
+                .catch(ctx)
+                .expect("Failed to cancel async task");
+        }),
     }
 }
 
