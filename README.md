@@ -236,6 +236,32 @@ that import completes. Ownership is restored for unconsumed stream/future writes
 and for imported calls cancelled before they start. Await imports using an
 incoming borrowed resource before returning from its export.
 
+### Cancelling Async Imports
+
+A pending async import exposes a `cancel()` method on its Promise. Calling it
+requests cancellation of that import. If cancellation succeeds, the original
+Promise rejects with `async import cancelled`; a call that finishes first may
+still resolve normally. The enclosing export remains active, so its catch/finally
+blocks can await further host operations.
+Await the original Promise before releasing resources it borrowed.
+
+Calls that complete immediately may have no `cancel` method; use optional
+chaining when completion timing is unknown. Repeated cancellation is harmless,
+and a saved cancellation function cannot affect a later call that reuses the
+same runtime handle.
+
+```js
+const pending = service.compute(input);
+const abort = () => pending.cancel?.();
+signal.addEventListener("abort", abort);
+try {
+    return await pending;
+} finally {
+    signal.removeEventListener("abort", abort);
+    await service.release();
+}
+```
+
 ### Async Exports
 
 Async exports are declared with the `async` keyword in WIT and implemented
@@ -475,6 +501,17 @@ Host-requested task cancellation retains pending ABI buffers until the host
 acknowledges each operation's completion or cancellation.
 
 Otherwise, call `.drop()` explicitly to release handles.
+
+## Snapshot Initialization
+
+The initializer links unknown host functions with trap stubs that preserve
+synchronous and asynchronous signatures. Calling an unavailable import while
+initializing still fails explicitly. WASI HTTP interfaces use the real host
+resource definitions so their stream types agree with WASI I/O resources.
+
+Snapshot creation uses a 1 GiB host-call copy budget to accommodate large module
+graphs. This allowance belongs to the build-time initializer; execution hosts
+continue to choose their own budgets for instantiated components.
 
 ## Node.js API
 

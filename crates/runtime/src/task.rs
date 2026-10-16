@@ -2,6 +2,7 @@
 #![allow(unsafe_code)]
 
 use std::cell::RefCell;
+use std::rc::Rc;
 
 use rquickjs::class::Class;
 use rquickjs::function::This;
@@ -32,6 +33,7 @@ pub(crate) enum Pending {
         buffer: *mut u8,
         resolve: Persistent<Function<'static>>,
         reject: Persistent<Function<'static>>,
+        token: Rc<()>,
     },
     /// A stream write that blocked.
     StreamWrite {
@@ -292,6 +294,30 @@ impl TaskState {
         Ok(())
     }
 
+    /// Cancel one import without cancelling the export that owns its cleanup.
+    pub(crate) fn cancel_import(
+        &self,
+        ctx: &Ctx<'_>,
+        handle: u32,
+        token: &Rc<()>,
+    ) -> rquickjs::Result<()> {
+        if !self.is_active() {
+            return Ok(());
+        }
+        let matches = self.with(|inner| {
+            inner.pending.get(&handle).is_some_and(|entry| {
+                if entry.cancel {
+                    return false;
+                }
+                matches!(&entry.op, Pending::ImportCall { token: active, .. } if Rc::ptr_eq(active, token))
+            })
+        });
+        if matches {
+            CancelRequest::Import.cancel(ctx, handle)?;
+        }
+        Ok(())
+    }
+
     /// Register a pending operation, joining it to the waitable set.
     pub(crate) fn register(&self, handle: u32, pending: Pending) {
         self.with(|inner| inner.register(handle, pending));
@@ -399,6 +425,7 @@ pub(crate) fn handle_subtask(handle: u32, state: SubtaskState) {
                 resolve,
                 reject,
                 mut call,
+                ..
             } = pending
             else {
                 unreachable!("expected ImportCall pending");

@@ -18,6 +18,8 @@ use wasmtime::component::{Component as WasmtimeComponent, Linker, ResourceTable}
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::p2::pipe::{MemoryInputPipe, MemoryOutputPipe};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+use wasmtime_wasi_http::WasiHttpCtx;
+use wasmtime_wasi_http::p2::{WasiHttpCtxView, WasiHttpView};
 use wasmtime_wizer::{WasmtimeWizerComponent, Wizer};
 use wit_parser::Resolve;
 
@@ -31,7 +33,22 @@ wasmtime::component::bindgen!({
 
 struct Ctx {
     wasi: WasiCtx,
+    http: WasiHttpCtx,
     table: ResourceTable,
+}
+
+// Components that serve or call HTTP (an `incoming-handler` export, say) import
+// `wasi:http/types`, whose streams are `wasi:io`'s. A trap stub for it would
+// mint its own stream resources and fail to link against the real `wasi:io`,
+// so provide the real interfaces during initialization.
+impl WasiHttpView for Ctx {
+    fn http(&mut self) -> WasiHttpCtxView<'_> {
+        WasiHttpCtxView {
+            ctx: &mut self.http,
+            table: &mut self.table,
+            hooks: Default::default(),
+        }
+    }
 }
 
 impl WasiView for Ctx {
@@ -213,6 +230,59 @@ fn runtime_wasm(runtime: Runtime<'_>) -> &[u8] {
     }
 }
 
+/// `define_unknown_imports_as_traps` stubs every function with a sync-typed
+/// host function, which fails the type check for an `async` import ("type
+/// mismatch with async"). A component importing an interface with an async
+/// function the initializer does not provide (any WASI 0.3 style host
+/// interface) therefore cannot be initialized at all.
+///
+/// Run after it: this redefines each imported instance whole (re-entering an
+/// instance in the linker replaces its map), with async functions as
+/// concurrent functions that trap. The real WASI definitions added afterwards
+/// shadow these in turn.
+fn define_unknown_imports_as_traps_async_aware(
+    linker: &mut Linker<Ctx>,
+    engine: &Engine,
+    component: &WasmtimeComponent,
+) -> Result<()> {
+    use wasmtime::component::ResourceType;
+    use wasmtime::component::types::ComponentItem;
+    let ty = component.component_type();
+    for (name, item) in ty.imports(engine) {
+        let ComponentItem::ComponentInstance(instance) = item.ty else {
+            continue;
+        };
+        let mut inst = linker.instance(name)?;
+        for (export, item) in instance.exports(engine) {
+            let qualified = format!("{name}#{export}");
+            match item.ty {
+                ComponentItem::ComponentFunc(func) if func.async_() => {
+                    inst.func_new_concurrent(export, move |_, _, _, _| {
+                        let qualified = qualified.clone();
+                        Box::pin(async move {
+                            Err(wasmtime::format_err!(
+                                "unknown import: `{qualified}` was called during initialization"
+                            ))
+                        })
+                    })?;
+                }
+                ComponentItem::ComponentFunc(_) => {
+                    inst.func_new(export, move |_, _, _, _| {
+                        Err(wasmtime::format_err!(
+                            "unknown import: `{qualified}` was called during initialization"
+                        ))
+                    })?;
+                }
+                ComponentItem::Resource(_) => {
+                    inst.resource(export, ResourceType::host::<()>(), |_, _| Ok(()))?;
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn wizer_init(
     component: &[u8],
     shim: &str,
@@ -236,7 +306,17 @@ async fn wizer_init(
     config.wasm_component_model_map(true);
 
     let engine = Engine::new(&config)?;
-    let mut store = Store::new(&engine, Ctx { wasi, table });
+    let mut store = Store::new(
+        &engine,
+        Ctx {
+            wasi,
+            http: WasiHttpCtx::new(),
+            table,
+        },
+    );
+    // Large module graphs can exceed the default 128 MiB host-call copy budget
+    // while creating a snapshot. Increase it only for the build initializer.
+    store.set_hostcall_fuel(1024 << 20);
 
     let wizer = Wizer::new();
     let (cx, instrumented) = wizer.instrument_component(component)?;
@@ -245,7 +325,9 @@ async fn wizer_init(
     let mut linker = Linker::new(&engine);
     linker.allow_shadowing(true);
     linker.define_unknown_imports_as_traps(&comp)?;
+    define_unknown_imports_as_traps_async_aware(&mut linker, &engine, &comp)?;
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)?;
     wasmtime_wasi::p3::add_to_linker(&mut linker)?;
 
     register_module_loader(&mut linker, resolver.clone())?;
