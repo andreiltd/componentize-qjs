@@ -157,17 +157,21 @@ mod async_builtins {
 
         // A private, zero-sized stream used to notify another export task.
         #[link_name = "[stream-new-unit]"]
-        pub(crate) fn wakeup_new() -> u64;
+        pub(crate) fn stream_new_unit() -> u64;
         #[link_name = "[async-lower][stream-read-unit]"]
-        pub(crate) fn wakeup_read(stream: u32, ptr: *mut u8, count: usize) -> u32;
+        pub(crate) fn async_lower_stream_read_unit(stream: u32, ptr: *mut u8, count: usize) -> u32;
         #[link_name = "[async-lower][stream-write-unit]"]
-        pub(crate) fn wakeup_write(stream: u32, ptr: *const u8, count: usize) -> u32;
+        pub(crate) fn async_lower_stream_write_unit(
+            stream: u32,
+            ptr: *const u8,
+            count: usize,
+        ) -> u32;
         #[link_name = "[stream-cancel-read-unit]"]
-        pub(crate) fn wakeup_cancel_read(stream: u32) -> u32;
+        pub(crate) fn stream_cancel_read_unit(stream: u32) -> u32;
         #[link_name = "[stream-drop-readable-unit]"]
-        pub(crate) fn wakeup_drop_readable(stream: u32);
+        pub(crate) fn stream_drop_readable_unit(stream: u32);
         #[link_name = "[stream-drop-writable-unit]"]
-        pub(crate) fn wakeup_drop_writable(stream: u32);
+        pub(crate) fn stream_drop_writable_unit(stream: u32);
 
         #[link_name = "[subtask-drop]"]
         pub(crate) fn subtask_drop(task: u32);
@@ -224,22 +228,30 @@ mod async_builtins {
         async_disabled()
     }
 
-    pub(crate) unsafe fn wakeup_new() -> u64 {
+    pub(crate) unsafe fn stream_new_unit() -> u64 {
         async_disabled()
     }
-    pub(crate) unsafe fn wakeup_read(_stream: u32, _ptr: *mut u8, _count: usize) -> u32 {
+    pub(crate) unsafe fn async_lower_stream_read_unit(
+        _stream: u32,
+        _ptr: *mut u8,
+        _count: usize,
+    ) -> u32 {
         async_disabled()
     }
-    pub(crate) unsafe fn wakeup_write(_stream: u32, _ptr: *const u8, _count: usize) -> u32 {
+    pub(crate) unsafe fn async_lower_stream_write_unit(
+        _stream: u32,
+        _ptr: *const u8,
+        _count: usize,
+    ) -> u32 {
         async_disabled()
     }
-    pub(crate) unsafe fn wakeup_cancel_read(_stream: u32) -> u32 {
+    pub(crate) unsafe fn stream_cancel_read_unit(_stream: u32) -> u32 {
         async_disabled()
     }
-    pub(crate) unsafe fn wakeup_drop_readable(_stream: u32) {
+    pub(crate) unsafe fn stream_drop_readable_unit(_stream: u32) {
         async_disabled()
     }
-    pub(crate) unsafe fn wakeup_drop_writable(_stream: u32) {
+    pub(crate) unsafe fn stream_drop_writable_unit(_stream: u32) {
         async_disabled()
     }
 

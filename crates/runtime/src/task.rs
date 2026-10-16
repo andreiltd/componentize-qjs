@@ -153,7 +153,7 @@ impl ExportCompletion {
         self.result = Some((func, value, rejected));
         if let Some(writer) = self.wakeup {
             // The owner keeps one unit read pending until completion/cancellation.
-            let code = unsafe { wakeup_write(writer, std::ptr::null(), 1) };
+            let code = unsafe { async_lower_stream_write_unit(writer, std::ptr::null(), 1) };
             assert_eq!(code, 1 << 4, "export wakeup must complete immediately");
         }
     }
@@ -184,10 +184,10 @@ impl TaskInner {
         if self.wakeup.is_some() {
             return;
         }
-        let pair = unsafe { wakeup_new() };
+        let pair = unsafe { stream_new_unit() };
         let writer = (pair >> 32) as u32;
         let reader = pair as u32;
-        let code = unsafe { wakeup_read(reader, std::ptr::null_mut(), 1) };
+        let code = unsafe { async_lower_stream_read_unit(reader, std::ptr::null_mut(), 1) };
         assert!(is_blocked_raw(code), "export wakeup read must block");
         unsafe { waitable_join(reader, self.waitable_set()) };
         self.wakeup = Some(reader);
@@ -209,10 +209,10 @@ impl TaskInner {
         unsafe {
             waitable_join(reader, 0);
             if cancel_read {
-                wakeup_cancel_read(reader);
+                stream_cancel_read_unit(reader);
             }
-            wakeup_drop_readable(reader);
-            wakeup_drop_writable(writer);
+            stream_drop_readable_unit(reader);
+            stream_drop_writable_unit(writer);
         }
     }
 
