@@ -434,6 +434,8 @@ impl TaskState {
                     drain_resource_drops(ctx);
                 }
                 drain_resource_drops(ctx);
+                // A sibling may have run our settlement callback. Lower and return
+                // the result here, with the owning task restored as the active task.
                 let completed = self.with(|inner| inner.completion.borrow_mut().result.take());
                 if let Some((func, value, rejected)) = completed {
                     if !self.is_cancelling() {

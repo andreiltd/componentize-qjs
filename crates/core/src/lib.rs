@@ -14,7 +14,10 @@ use bytes::Bytes;
 use resolver::Resolver;
 use stubwasi::{stub_internal_imports, stub_wasi_imports};
 use wasi_preview1_component_adapter_provider::WASI_SNAPSHOT_PREVIEW1_REACTOR_ADAPTER;
-use wasmtime::component::{Component as WasmtimeComponent, Linker, ResourceTable};
+use wasmtime::component::types::ComponentItem;
+use wasmtime::component::{
+    Component as WasmtimeComponent, Linker, LinkerInstance, ResourceTable, ResourceType,
+};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::p2::pipe::{MemoryInputPipe, MemoryOutputPipe};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
@@ -213,71 +216,17 @@ fn runtime_wasm(runtime: Runtime<'_>) -> &[u8] {
     }
 }
 
-/// Stub initialization-only imports without changing async function types or
-/// assigning new identities to equality aliases of imported resources.
+/// Supply placeholders so Wizer can instantiate the component and evaluate JS.
+/// Real WASI and module-loader definitions replace these placeholders afterward;
+/// any remaining host function traps if called during initialization.
 fn define_unknown_imports_as_traps(
     linker: &mut Linker<Ctx>,
     engine: &Engine,
     component: &WasmtimeComponent,
 ) -> Result<()> {
-    use wasmtime::component::ResourceType;
-    use wasmtime::component::types::ComponentItem;
-
-    fn define(
-        linker: &mut wasmtime::component::LinkerInstance<'_, Ctx>,
-        engine: &Engine,
-        name: &str,
-        path: &str,
-        ty: ComponentItem,
-        resources: &mut Vec<ResourceType>,
-    ) -> Result<()> {
-        match ty {
-            ComponentItem::ComponentInstance(instance) => {
-                let mut nested = linker.instance(name)?;
-                for (export, item) in instance.exports(engine) {
-                    define(
-                        &mut nested,
-                        engine,
-                        export,
-                        &format!("{path}#{export}"),
-                        item.ty,
-                        resources,
-                    )?;
-                }
-            }
-            ComponentItem::ComponentFunc(func) => {
-                let message = format!("unknown import: `{path}` has not been defined");
-                if func.async_() {
-                    linker.func_new_concurrent(name, move |_, _, _, _| {
-                        let message = message.clone();
-                        Box::pin(async move { Err(wasmtime::Error::msg(message)) })
-                    })?;
-                } else {
-                    linker.func_new(name, move |_, _, _, _| {
-                        Err(wasmtime::Error::msg(message.clone()))
-                    })?;
-                }
-            }
-            ComponentItem::Resource(ty) => {
-                // Omit equality aliases: Wasmtime resolves them to the original
-                // definition, including resources supplied by the WASI linker.
-                if !resources.contains(&ty) {
-                    let resource = ResourceType::host_dynamic(u32::try_from(resources.len())?);
-                    resources.push(ty);
-                    linker.resource(name, resource, |_, _| Ok(()))?;
-                }
-            }
-            ComponentItem::Component(_) | ComponentItem::Module(_) => {
-                anyhow::bail!("unable to define component or module import `{path}` as a trap");
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
     let mut resources = Vec::new();
     for (name, item) in component.component_type().imports(engine) {
-        define(
+        trap_import(
             &mut linker.root(),
             engine,
             name,
@@ -285,6 +234,63 @@ fn define_unknown_imports_as_traps(
             item.ty,
             &mut resources,
         )?;
+    }
+    Ok(())
+}
+
+/// Stub one import while preserving the types Wasmtime checks during linking.
+/// `resources` is shared across namespaces to recognize aliases of earlier imports.
+fn trap_import(
+    linker: &mut LinkerInstance<'_, Ctx>,
+    engine: &Engine,
+    name: &str,
+    path: &str,
+    ty: ComponentItem,
+    resources: &mut Vec<ResourceType>,
+) -> Result<()> {
+    match ty {
+        ComponentItem::ComponentInstance(instance) => {
+            // Imported interfaces are namespaces whose members also need stubs.
+            let mut nested = linker.instance(name)?;
+            for (export, item) in instance.exports(engine) {
+                trap_import(
+                    &mut nested,
+                    engine,
+                    export,
+                    &format!("{path}#{export}"),
+                    item.ty,
+                    resources,
+                )?;
+            }
+        }
+        ComponentItem::ComponentFunc(func) => {
+            let message = format!("unknown import: `{path}` has not been defined");
+            // Even a trapping function must match the import's sync/async ABI.
+            if func.async_() {
+                linker.func_new_concurrent(name, move |_, _, _, _| {
+                    let message = message.clone();
+                    Box::pin(async move { Err(wasmtime::Error::msg(message)) })
+                })?;
+            } else {
+                linker.func_new(name, move |_, _, _, _| {
+                    Err(wasmtime::Error::msg(message.clone()))
+                })?;
+            }
+        }
+        ComponentItem::Resource(ty) => {
+            // Give unrelated resources distinct identities. Leave equality aliases
+            // absent so Wasmtime follows the original, including later WASI overrides.
+            if !resources.contains(&ty) {
+                let resource = ResourceType::host_dynamic(u32::try_from(resources.len())?);
+                resources.push(ty);
+                // Trapping constructors cannot create values needing destruction.
+                linker.resource(name, resource, |_, _| Ok(()))?;
+            }
+        }
+        ComponentItem::Component(_) | ComponentItem::Module(_) => {
+            anyhow::bail!("unable to define component or module import `{path}` as a trap");
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -399,8 +405,6 @@ fn register_module_loader(linker: &mut Linker<Ctx>, resolver: Option<Resolver>) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wasmtime::component::ResourceType;
-    use wasmtime::component::types::ComponentItem;
 
     #[test]
     fn initialization_stubs_preserve_resource_identity_and_async_types() {
