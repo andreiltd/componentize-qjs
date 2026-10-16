@@ -34,7 +34,12 @@ fn main() -> Result<()> {
         println!("cargo:rerun-if-changed=prebuilt/{}", build.filename);
     }
 
-    for variable in [RUNTIME_AUDITABLE_ENV, "WASI_SDK_PATH", "WASM_OPT"] {
+    for variable in [
+        RUNTIME_AUDITABLE_ENV,
+        "WASI_SDK_PATH",
+        "WASM_OPT",
+        "CARGO_PROFILE_RELEASE_CODEGEN_UNITS",
+    ] {
         println!("cargo:rerun-if-env-changed={variable}");
     }
 

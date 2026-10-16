@@ -119,9 +119,12 @@ impl CargoProfile {
         }
     }
 
-    /// Avoid disposable debug/incremental data while respecting caller overrides.
+    /// Apply runtime-only profile defaults while respecting caller overrides.
     fn configure_nested_build(&self, cargo: &mut Command) {
-        if !self.release {
+        if self.release {
+            // A single codegen unit reduces runtime size even with fat LTO.
+            set_env_if_unset(cargo, "CARGO_PROFILE_RELEASE_CODEGEN_UNITS", "1");
+        } else {
             set_env_if_unset(cargo, "CARGO_PROFILE_DEV_DEBUG", "0");
         }
         // Runtime target directories are disposable, so incremental state
@@ -523,5 +526,24 @@ mod tests {
         );
         assert_eq!(release.runtime_cflags(false), "-fPIC -O3");
         assert_eq!(release.runtime_cflags(true), "-fPIC -Oz");
+    }
+
+    #[test]
+    fn release_codegen_units_default_is_scoped_to_nested_builds() {
+        let key = "CARGO_PROFILE_RELEASE_CODEGEN_UNITS";
+
+        for release in [false, true] {
+            let mut cargo = Command::new("cargo");
+            CargoProfile::new(release).configure_nested_build(&mut cargo);
+
+            let configured = cargo
+                .get_envs()
+                .find(|(name, _)| *name == key)
+                .and_then(|(_, value)| value);
+            let expected =
+                (release && env::var_os(key).is_none()).then_some(std::ffi::OsStr::new("1"));
+
+            assert_eq!(configured, expected);
+        }
     }
 }

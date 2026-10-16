@@ -4,6 +4,7 @@
 //! and user module under Wizer, then snapshots the initialized runtime.
 
 pub mod codegen;
+mod postprocess;
 mod resolver;
 pub mod stubwasi;
 
@@ -169,7 +170,7 @@ pub async fn componentize(opts: &ComponentizeOpts<'_>) -> Result<Vec<u8>> {
         component = stub_wasi_imports(&component).context("failed to stub WASI imports")?;
     }
 
-    Ok(component)
+    postprocess::cleanup(&component).context("failed to clean up snapshotted component")
 }
 
 fn module_resolution(opts: &ComponentizeOpts<'_>) -> Result<Option<Resolver>> {
@@ -238,8 +239,11 @@ async fn wizer_init(
     let engine = Engine::new(&config)?;
     let mut store = Store::new(&engine, Ctx { wasi, table });
 
-    let wizer = Wizer::new();
-    let (cx, instrumented) = wizer.instrument_component(component)?;
+    let (component, init_name) = postprocess::prepare_snapshot(component)?;
+
+    let mut wizer = Wizer::new();
+    wizer.init_func(&init_name);
+    let (cx, instrumented) = wizer.instrument_component(&component)?;
     let comp = WasmtimeComponent::new(&engine, &instrumented)?;
 
     let mut linker = Linker::new(&engine);
@@ -250,18 +254,17 @@ async fn wizer_init(
 
     register_module_loader(&mut linker, resolver.clone())?;
 
+    type InitParams<'a> = (&'a str, &'a str, Option<&'a str>, bool);
+    type InitResults = (std::result::Result<(), String>,);
+
     let instance = linker.instantiate_async(&mut store, &comp).await?;
-    let init = Init::new(&mut store, &instance)?;
-    init.call_init(
-        &mut store,
-        shim,
-        js,
-        resolver.as_ref().map(Resolver::entry_path),
-        disable_gc,
-    )
-    .await?
-    .map_err(|e| anyhow!("{e}"))
-    .with_context(move || {
+    let init = instance.get_typed_func::<InitParams<'_>, InitResults>(&mut store, &init_name)?;
+
+    let entry_path = resolver.as_ref().map(Resolver::entry_path);
+    let params = (shim, js, entry_path, disable_gc);
+    let (result,) = init.call_async(&mut store, params).await?;
+
+    result.map_err(|e| anyhow!("{e}")).with_context(move || {
         format!(
             "{}{}",
             String::from_utf8_lossy(&stdout.contents()),

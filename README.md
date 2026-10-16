@@ -24,6 +24,8 @@ Under the hood it:
 3. Snapshots the initialized JS state with
    [Wizer](https://github.com/bytecodealliance/wizer) so startup cost is paid at
    build time, not at runtime.
+4. Prunes explicitly marked one-time setup code with Walrus and strips
+   debug/build metadata from the snapshotted component.
 
 ## Prerequisites
 

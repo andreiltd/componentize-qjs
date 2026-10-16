@@ -7,7 +7,7 @@ use crate::resources::{ResourceTable, drain_resource_drops};
 use crate::result::ResultBoundary;
 use crate::task::TaskState;
 use crate::wit_imports::WitImportRegistry;
-use crate::{QjsCallContext, with_ctx};
+use crate::{JsState, QjsCallContext, with_ctx};
 use crate::{abi, futures, streams};
 
 use rquickjs::{CatchResultExt, JsLifetime};
@@ -24,7 +24,7 @@ impl Interpreter for QjsInterpreter {
     type CallCx<'a> = QjsCallContext;
 
     fn initialize(wit: Wit) {
-        with_ctx(|ctx| {
+        JsState::get_or_init().with_ctx(|ctx| {
             ctx.store_userdata(WitData(wit))
                 .expect("Failed to store WIT userdata");
             ctx.store_userdata(ResourceTable::default())
