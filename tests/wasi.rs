@@ -260,8 +260,9 @@ async fn test_wasi_0_3_stdio_example() {
     assert_eq!(inst.stdout_bytes(), b"hello from wasi 0.3");
 }
 
-#[test]
-fn test_snapshot_preserves_async_imports_and_shared_io_resources() {
+#[cfg(feature = "component-model-async")]
+#[tokio::test]
+async fn test_snapshot_preserves_async_imports_and_shared_resources() {
     let directory = tempfile::tempdir().unwrap();
     let io = directory.path().join("deps/io");
     std::fs::create_dir_all(&io).unwrap();
@@ -270,33 +271,113 @@ fn test_snapshot_preserves_async_imports_and_shared_io_resources() {
         include_str!("wit/deps/wasi-io-0.2.12/package.wit"),
     )
     .unwrap();
+    for package in ["filesystem", "clocks", "cli", "random", "sockets"] {
+        let dep = directory.path().join("deps").join(package);
+        std::fs::create_dir_all(&dep).unwrap();
+        std::fs::copy(
+            wasi_wit_dir().join(format!("deps/wasi-{package}-0.2.12/package.wit")),
+            dep.join("package.wit"),
+        )
+        .unwrap();
+    }
     std::fs::write(directory.path().join("test.wit"), r#"
         package test:snapshot-aliases;
         interface host {
             use wasi:io/streams@0.2.12.{input-stream, output-stream};
             use wasi:io/poll@0.2.12.{pollable};
             use wasi:io/error@0.2.12.{error};
+            use wasi:filesystem/types@0.2.12.{descriptor, directory-entry-stream};
+            inspect: async func(input: borrow<input-stream>) -> u64;
+            filesystem: func(file: borrow<descriptor>, entries: borrow<directory-entry-stream>);
             unused: async func(input: borrow<input-stream>, output: borrow<output-stream>, poll: borrow<pollable>, failure: borrow<error>);
         }
         world test {
             import wasi:io/streams@0.2.12;
             import wasi:io/poll@0.2.12;
             import wasi:io/error@0.2.12;
+            import wasi:filesystem/types@0.2.12;
+            import wasi:cli/stdin@0.2.12;
             import host;
-            export run: func() -> u32;
+            import transform: async func(value: u64) -> u64;
+            export run: async func() -> u64;
         }
     "#).unwrap();
-    TestCase::new()
+    let component = TestCase::new()
         .wit_dir(directory.path())
         .world("test")
         .script(
             r#"
-            import { unused } from "test:snapshot-aliases/host";
-            export function run() { return 1; }
+            import { inspect } from "test:snapshot-aliases/host";
+            import { getStdin } from "wasi:cli/stdin@0.2.12";
+            export async function run() {
+                const input = getStdin();
+                try { return await transform(await inspect(input)); }
+                finally { input.drop(); }
+            }
         "#,
         )
-        .compile()
+        .compile_async()
+        .await
         .expect(
             "snapshot linker must preserve asynchronous functions and WASI resource identities",
         );
+
+    use common::WasiCtxState;
+    use wasmtime::Store;
+    use wasmtime::component::{Linker, Resource, ResourceTable};
+    use wasmtime_wasi::{WasiCtxBuilder, p2::DynInputStream};
+
+    let mut linker = Linker::<WasiCtxState>::new(component.engine());
+    wasmtime_wasi::p2::add_to_linker_async(&mut linker).unwrap();
+    let mut host = linker.instance("test:snapshot-aliases/host").unwrap();
+    host.func_wrap_concurrent(
+        "inspect",
+        |accessor, (input,): (Resource<DynInputStream>,)| {
+            Box::pin(async move {
+                accessor.with(|mut store| store.data_mut().table.get(&input).map(|_| ()))?;
+                // Force suspension before returning a value beyond Number's precision.
+                tokio::task::yield_now().await;
+                Ok(((1u64 << 63) + 7,))
+            })
+        },
+    )
+    .unwrap();
+    host.func_new("filesystem", |_, _, _, _| {
+        Err(wasmtime::Error::msg("unused"))
+    })
+    .unwrap();
+    host.func_new_concurrent("unused", |_, _, _, _| {
+        Box::pin(async { Err(wasmtime::Error::msg("unused")) })
+    })
+    .unwrap();
+    linker
+        .root()
+        .func_wrap_concurrent("transform", |_, (value,): (u64,)| {
+            Box::pin(async move { Ok((value,)) })
+        })
+        .unwrap();
+    let mut store = Store::new(
+        component.engine(),
+        WasiCtxState {
+            wasi: WasiCtxBuilder::new().build(),
+            table: ResourceTable::new(),
+        },
+    );
+    let instance = linker
+        .instantiate_async(&mut store, &component)
+        .await
+        .unwrap();
+    let run = instance
+        .get_typed_func::<(), (u64,)>(&mut store, "run")
+        .unwrap();
+    for _ in 0..2 {
+        assert_eq!(
+            run.call_async(&mut store, ()).await.unwrap(),
+            ((1u64 << 63) + 7,)
+        );
+        assert!(
+            store.data().table.is_empty(),
+            "borrowed stdin must be released"
+        );
+    }
 }

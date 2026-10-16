@@ -37,12 +37,15 @@ impl<'js> ExportCall<'js> {
     ) -> rquickjs::Result<Value<'js>> {
         let completion = ctx.task().completion();
         let fulfilled = completion.clone();
-        let result = self.invoke()?;
-        let promise = result
-            .as_object()
-            .ok_or_else(|| rquickjs::Error::new_from_js("value", "promise"))?;
-
-        let then: Function = promise.get("then")?;
+        // Native promise resolution assimilates thenables, accepts immediate
+        // values, and ignores repeated settlements and throws after settlement.
+        let (promise, resolve, reject) = ctx.promise()?;
+        match self.invoke() {
+            Ok(value) => resolve.call::<_, ()>((value,))?,
+            Err(rquickjs::Error::Exception) => reject.call::<_, ()>((ctx.catch(),))?,
+            Err(error) => return Err(error),
+        }
+        let then = promise.then()?;
 
         let resolve = Function::new(
             ctx.clone(),
@@ -54,7 +57,11 @@ impl<'js> ExportCall<'js> {
                     .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
 
                 // Record settlement for the owning export; another task may be draining jobs.
-                fulfilled.borrow_mut().result = Some((func, Persistent::save(&ctx, value), false));
+                if let Some(fulfilled) = fulfilled.upgrade() {
+                    fulfilled
+                        .borrow_mut()
+                        .settle(func, Persistent::save(&ctx, value), false);
+                }
                 Ok(Value::new_undefined(ctx))
             }),
         )?;
@@ -68,13 +75,17 @@ impl<'js> ExportCall<'js> {
                     .next()
                     .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
 
-                completion.borrow_mut().result = Some((func, Persistent::save(&ctx, reason), true));
+                if let Some(completion) = completion.upgrade() {
+                    completion
+                        .borrow_mut()
+                        .settle(func, Persistent::save(&ctx, reason), true);
+                }
                 Ok(Value::new_undefined(ctx))
             }),
         )?;
 
         let mut args = Args::new(ctx.clone(), 2);
-        args.this(result)?;
+        args.this(promise)?;
         args.push_arg(resolve)?;
         args.push_arg(reject)?;
         then.call_arg(args)
