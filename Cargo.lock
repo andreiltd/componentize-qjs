@@ -403,7 +403,7 @@ dependencies = [
 
 [[package]]
 name = "componentize-qjs"
-version = "0.4.5"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -431,7 +431,7 @@ dependencies = [
 
 [[package]]
 name = "componentize-qjs-cli"
-version = "0.4.5"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -453,7 +453,7 @@ dependencies = [
 
 [[package]]
 name = "componentize-qjs-napi"
-version = "0.4.5"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -467,7 +467,7 @@ dependencies = [
 
 [[package]]
 name = "componentize-qjs-runtime"
-version = "0.4.5"
+version = "0.5.0"
 dependencies = [
  "heck",
  "indexmap",
