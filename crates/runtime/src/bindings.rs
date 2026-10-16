@@ -2,8 +2,10 @@
 use heck::{ToLowerCamelCase, ToUpperCamelCase};
 use rquickjs::Persistent;
 use rquickjs::function::{Constructor, Rest, This};
+use rquickjs::object::Property;
 use rquickjs::{Ctx, Function, Object, Value};
 use smallvec::SmallVec;
+use std::rc::Rc;
 use wit_dylib_ffi::{Resource, Type, Wit};
 
 use crate::CtxExt;
@@ -249,6 +251,21 @@ fn call_import<'js>(
         if let Some(pending) = unsafe { func.call_import_async(&mut call) } {
             let handle = pending.subtask;
             let buffer = pending.buffer;
+            let token = Rc::new(());
+            let cancel_token = token.clone();
+            // Cancel only this import so its caller can finish asynchronous
+            // cleanup. A token prevents cancellation after handle reuse.
+            // Define an own data property: assignment could invoke an inherited
+            // setter while the host still owns this call's ABI buffers.
+            promise.prop(
+                "cancel",
+                Property::from(Function::new(ctx.clone(), move |ctx: Ctx<'_>| {
+                    ctx.task().cancel_import(&ctx, handle, &cancel_token)
+                })?)
+                .writable()
+                .configurable()
+                .enumerable(),
+            )?;
 
             let resolve = Persistent::save(&ctx, resolve);
             let reject = Persistent::save(&ctx, reject);
@@ -258,6 +275,7 @@ fn call_import<'js>(
                 buffer,
                 resolve,
                 reject,
+                token,
             };
             ctx.task().register(handle, pending);
         } else {

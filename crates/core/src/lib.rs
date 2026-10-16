@@ -238,6 +238,9 @@ async fn wizer_init(
 
     let engine = Engine::new(&config)?;
     let mut store = Store::new(&engine, Ctx { wasi, table });
+    // Large module graphs can exceed the default 128 MiB host-call copy budget
+    // while creating a snapshot. Increase it only for the build initializer.
+    store.set_hostcall_fuel(1024 << 20);
 
     let (component, init_name) = postprocess::prepare_snapshot(component)?;
 
