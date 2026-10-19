@@ -30,9 +30,15 @@ fn main() -> Result<()> {
         }
     }
 
-    for build in RUNTIME_BUILDS {
-        println!("cargo:rerun-if-changed=prebuilt/{}", build.filename);
-    }
+    let prebuilt_dir = manifest_dir.join("prebuilt");
+    // Missing watched paths are always dirty; watch an existing parent instead.
+    let prebuilt_watch_dir = if prebuilt_dir.is_dir() {
+        &prebuilt_dir
+    } else {
+        &manifest_dir
+    };
+
+    println!("cargo:rerun-if-changed={}", prebuilt_watch_dir.display());
 
     for variable in [
         RUNTIME_AUDITABLE_ENV,
@@ -44,7 +50,6 @@ fn main() -> Result<()> {
     }
 
     let async_support = env::var_os("CARGO_FEATURE_COMPONENT_MODEL_ASYNC").is_some();
-    let prebuilt_dir = manifest_dir.join("prebuilt");
 
     let artifact_dir = if prebuilt_dir.join("runtime-sync.wasm").exists() {
         eprintln!("Using prebuilt runtimes from: {}", prebuilt_dir.display());

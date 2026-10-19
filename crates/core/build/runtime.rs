@@ -359,7 +359,7 @@ fn get_wasi_sdk(out_dir: &Path) -> Result<PathBuf> {
 
     // Rename extracted directory to stable location
     let extracted = find_wasi_sdk(out_dir).context("Could not find extracted wasi-sdk")?;
-    fs::rename(&extracted, &stable).context("Failed to rename wasi-sdk directory")?;
+    install_tool_dir(&extracted, &stable).context("Failed to install wasi-sdk")?;
 
     Ok(stable)
 }
@@ -400,7 +400,7 @@ fn get_wasm_opt(out_dir: &Path) -> Result<PathBuf> {
 
     // Rename extracted directory to stable location
     let extracted = find_binaryen(out_dir).context("Could not find extracted binaryen")?;
-    fs::rename(&extracted, &stable).context("Failed to rename binaryen directory")?;
+    install_tool_dir(&extracted, &stable).context("Failed to install binaryen")?;
 
     Ok(executable(&stable, "bin/wasm-opt"))
 }
@@ -412,6 +412,24 @@ fn find_binaryen(target_dir: &Path) -> Option<PathBuf> {
         .ok()?
         .filter_map(Result::ok)
         .find(|entry| entry.is_dir() && executable(entry, "bin/wasm-opt").exists())
+}
+
+/// Move a validated tool download into its stable cache location.
+///
+/// Cargo caches can retain directory trees while pruning tool executables.
+/// Remove any incomplete cached tree before promoting the validated download.
+fn install_tool_dir(extracted: &Path, stable: &Path) -> Result<()> {
+    if extracted == stable {
+        return Ok(());
+    }
+
+    match fs::remove_dir_all(stable) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err).with_context(|| "Failed to remove tool cache"),
+    }
+
+    fs::rename(extracted, stable).with_context(|| "Failed to rename tool directory")
 }
 
 /// Apply the host executable suffix to a tool path.
@@ -473,6 +491,76 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
+
+    /// Tool downloads replace the nonempty directory trees left by Cargo caches.
+    #[test]
+    fn tool_installation_replaces_incomplete_caches() {
+        let dir = tempfile::tempdir().unwrap();
+
+        for (name, tool) in [("wasi-sdk", "bin/clang"), ("binaryen", "bin/wasm-opt")] {
+            let stable = dir.path().join(name);
+            let extracted = dir.path().join(format!("{name}-download"));
+            let downloaded_tool = executable(&extracted, tool);
+            fs::create_dir_all(stable.join("lib/nested")).unwrap();
+            fs::create_dir_all(downloaded_tool.parent().unwrap()).unwrap();
+            fs::write(&downloaded_tool, b"downloaded tool").unwrap();
+
+            assert!(!executable(&stable, tool).exists());
+            install_tool_dir(&extracted, &stable).unwrap();
+
+            assert_eq!(
+                fs::read(executable(&stable, tool)).unwrap(),
+                b"downloaded tool",
+            );
+            assert!(!stable.join("lib/nested").exists());
+            assert!(!extracted.exists());
+        }
+    }
+
+    /// A first installation needs no pre-existing stable directory.
+    #[test]
+    fn tool_installation_creates_a_fresh_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let extracted = dir.path().join("download");
+        let stable = dir.path().join("cache");
+        fs::create_dir(&extracted).unwrap();
+        fs::write(extracted.join("tool"), b"downloaded tool").unwrap();
+
+        install_tool_dir(&extracted, &stable).unwrap();
+
+        assert_eq!(fs::read(stable.join("tool")).unwrap(), b"downloaded tool");
+        assert!(!extracted.exists());
+    }
+
+    /// Archives already extracted at the stable location are not removed.
+    #[test]
+    fn tool_installation_preserves_an_already_stable_download() {
+        let dir = tempfile::tempdir().unwrap();
+        let stable = dir.path().join("cache");
+        fs::create_dir(&stable).unwrap();
+        fs::write(stable.join("tool"), b"downloaded tool").unwrap();
+
+        install_tool_dir(&stable, &stable).unwrap();
+
+        assert_eq!(fs::read(stable.join("tool")).unwrap(), b"downloaded tool");
+    }
+
+    /// Cleanup failures remain visible and leave the downloaded tool untouched.
+    #[test]
+    fn tool_installation_reports_cache_removal_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let extracted = dir.path().join("download");
+        let stable = dir.path().join("cache");
+        fs::create_dir(&extracted).unwrap();
+        fs::write(&stable, b"not a directory").unwrap();
+
+        let err = install_tool_dir(&extracted, &stable).unwrap_err();
+
+        assert!(err.to_string().contains("Failed to remove tool cache"));
+        assert!(err.downcast_ref::<std::io::Error>().is_some());
+        assert!(extracted.is_dir());
+        assert_eq!(fs::read(stable).unwrap(), b"not a directory");
+    }
 
     /// Each embedding constant and artifact has one definition and a valid fallback.
     #[test]
