@@ -10,10 +10,11 @@ use std::task::{Context, Poll};
 
 use common::{AsyncComponentInstance, TestCase, WasiCtxState};
 use wasmtime::component::{
-    Component, Destination, FutureConsumer, FutureReader, Lift, Source, StreamConsumer,
-    StreamProducer, StreamReader, StreamResult, Val, VecBuffer,
+    Component, Destination, FutureConsumer, FutureReader, Lift, Linker, ResourceTable, Source,
+    StreamConsumer, StreamProducer, StreamReader, StreamResult, Val, VecBuffer,
 };
-use wasmtime::{AsContextMut, StoreContextMut};
+use wasmtime::{AsContextMut, Store, StoreContextMut};
+use wasmtime_wasi::WasiCtxBuilder;
 
 async fn component() -> AsyncComponentInstance {
     static COMPONENT: tokio::sync::OnceCell<Component> = tokio::sync::OnceCell::const_new();
@@ -111,6 +112,178 @@ async fn test_async_with_await() {
         .await
         .unwrap();
     assert_eq!(result, Val::U32(100));
+}
+
+/// World-level async imports must survive Wizer's unknown-import stubbing.
+///
+/// Link a yielding host implementation only after snapshotting, then call it
+/// repeatedly through an async export to exercise suspension and task cleanup.
+#[tokio::test]
+async fn test_async_custom_wit_root_import() {
+    let component = TestCase::new()
+        .wit(
+            r#"
+            package test:async-root-import;
+
+            world async-root-import {
+                import host-add: async func(left: u32, right: u32) -> u32;
+                export add-twice: async func(left: u32, right: u32) -> u32;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            export async function addTwice(left, right) {
+                const sum = await hostAdd(left, right);
+                return await hostAdd(sum, right);
+            }
+            "#,
+        )
+        .compile_async()
+        .await
+        .expect("custom async root imports should survive snapshotting");
+
+    let engine = component.engine();
+    let mut store = Store::new(
+        engine,
+        WasiCtxState {
+            wasi: WasiCtxBuilder::new().build(),
+            table: ResourceTable::new(),
+        },
+    );
+    let mut linker = Linker::new(engine);
+    wasmtime_wasi::p2::add_to_linker_async(&mut linker).unwrap();
+    wasmtime_wasi::p3::add_to_linker(&mut linker).unwrap();
+    linker
+        .root()
+        .func_wrap_concurrent("host-add", |_, (left, right): (u32, u32)| {
+            Box::pin(async move {
+                tokio::task::yield_now().await;
+                Ok((left + right,))
+            })
+        })
+        .unwrap();
+
+    let instance = linker
+        .instantiate_async(&mut store, &component)
+        .await
+        .unwrap();
+    let add_twice = instance
+        .get_typed_func::<(u32, u32), (u32,)>(&mut store, "add-twice")
+        .unwrap();
+
+    for (left, right, expected) in [(4, 5, 14), (2, 3, 8)] {
+        let (result,) = add_twice
+            .call_async(&mut store, (left, right))
+            .await
+            .unwrap();
+
+        assert_eq!(result, expected);
+    }
+}
+
+/// Interface-scoped async imports preserve results, rejections, and void returns.
+///
+/// Snapshot without host implementations, then await yielding host calls through
+/// JavaScript and verify both result branches and the notification side effects.
+#[tokio::test]
+async fn test_async_custom_wit_interface_imports() {
+    let component = TestCase::new()
+        .wit(
+            r#"
+            package test:async-interface-import;
+
+            interface host {
+                transform: async func(value: string, fail: bool) -> result<string, string>;
+                notify: async func(value: string);
+            }
+
+            world async-interface-import {
+                import host;
+                export transform: async func(value: string, fail: bool) -> result<string, string>;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            import host from "test:async-interface-import/host";
+
+            export async function transform(value, fail) {
+                const result = await host.transform(value, fail);
+                await host.notify(result);
+                return result;
+            }
+            "#,
+        )
+        .compile_async()
+        .await
+        .expect("custom async interface imports should survive snapshotting");
+
+    let engine = component.engine();
+    let mut store = Store::new(
+        engine,
+        WasiCtxState {
+            wasi: WasiCtxBuilder::new().build(),
+            table: ResourceTable::new(),
+        },
+    );
+    let mut linker = Linker::new(engine);
+    wasmtime_wasi::p2::add_to_linker_async(&mut linker).unwrap();
+    wasmtime_wasi::p3::add_to_linker(&mut linker).unwrap();
+
+    let notifications = Arc::new(Mutex::new(Vec::new()));
+    let host_notifications = Arc::clone(&notifications);
+    let mut host = linker.instance("test:async-interface-import/host").unwrap();
+    host.func_wrap_concurrent("transform", |_, (value, fail): (String, bool)| {
+        Box::pin(async move {
+            tokio::task::yield_now().await;
+
+            let result = if fail {
+                Err(format!("rejected {value}"))
+            } else {
+                Ok(format!("processed {value}"))
+            };
+
+            Ok((result,))
+        })
+    })
+    .unwrap();
+    host.func_wrap_concurrent("notify", move |_, (value,): (String,)| {
+        let notifications = Arc::clone(&host_notifications);
+
+        Box::pin(async move {
+            tokio::task::yield_now().await;
+            notifications.lock().unwrap().push(value);
+            Ok(())
+        })
+    })
+    .unwrap();
+
+    let instance = linker
+        .instantiate_async(&mut store, &component)
+        .await
+        .unwrap();
+    let transform = instance
+        .get_typed_func::<(String, bool), (Result<String, String>,)>(&mut store, "transform")
+        .unwrap();
+
+    for (value, fail, expected) in [
+        ("first", false, Ok("processed first".to_string())),
+        ("second", true, Err("rejected second".to_string())),
+        ("third", false, Ok("processed third".to_string())),
+    ] {
+        let (result,) = transform
+            .call_async(&mut store, (value.to_string(), fail))
+            .await
+            .unwrap();
+
+        assert_eq!(result, expected);
+    }
+
+    assert_eq!(
+        *notifications.lock().unwrap(),
+        ["processed first", "processed third"]
+    );
 }
 
 /// Export getters can start async operations before the function is invoked.

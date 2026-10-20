@@ -274,7 +274,7 @@ async fn wizer_init(
 
     let component = wizer
         .snapshot_component(
-            cx,
+            &cx,
             &mut WasmtimeWizerComponent {
                 store: &mut store,
                 instance,

@@ -29,8 +29,8 @@ Under the hood it:
 
 ## Prerequisites
 
-Rust **1.94** or later is required (the `wasm32-wasip2` target needs a recent
-toolchain for PIC support in wasi-libc).
+Rust **1.97** or later is required by Wasmtime (the `wasm32-wasip2` target also
+needs a recent toolchain for PIC support in wasi-libc).
 
 ## Installation
 
