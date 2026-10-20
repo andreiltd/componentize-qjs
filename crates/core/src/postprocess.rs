@@ -412,7 +412,7 @@ mod tests {
         init.call_async(&mut store, ()).await.unwrap();
         let snapshot = wizer
             .snapshot_component(
-                cx,
+                &cx,
                 &mut WasmtimeWizerComponent {
                     store: &mut store,
                     instance,
