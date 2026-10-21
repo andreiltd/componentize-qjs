@@ -373,6 +373,8 @@ async fn test_async_export_thenables() {
             world async-thenables {
                 export settle: async func(value: u32, fail: bool) -> result<u32, string>;
                 export settle-void: async func();
+                export immediate: async func(fail: bool) -> result<u32, string>;
+                export broken: async func() -> result<u32, string>;
             }
             "#,
         )
@@ -385,15 +387,26 @@ async fn test_async_export_thenables() {
                     then(resolve, reject) {
                         if (this.fail) {
                             reject("expected failure");
+                            resolve(99);
                         } else {
                             resolve(this.value);
+                            reject("ignored rejection");
                         }
+                        resolve(100);
+                        throw new Error("ignored throw after settlement");
                     },
                 };
             }
 
             export function settleVoid() {
                 return { then(resolve) { resolve(); } };
+            }
+            export function immediate(fail) {
+                if (fail) throw "expected failure";
+                return 42;
+            }
+            export function broken() {
+                return { get then() { throw "getter failed"; } };
             }
             "#,
         )
@@ -412,8 +425,20 @@ async fn test_async_export_thenables() {
             Ok(Some(Box::new(Val::U32(42))))
         };
 
-        assert_eq!(result, Val::Result(expected));
+        assert_eq!(result, Val::Result(expected.clone()));
+        assert_eq!(
+            instance
+                .call1_async("immediate", &[Val::Bool(fail)])
+                .await
+                .unwrap(),
+            Val::Result(expected),
+        );
     }
+
+    assert_eq!(
+        instance.call1_async("broken", &[]).await.unwrap(),
+        Val::Result(Err(Some(Box::new(Val::String("getter failed".into()))))),
+    );
 
     assert!(
         instance
@@ -2762,6 +2787,218 @@ async fn test_host_stream_to_guest() {
     let (count,) = func.call_async(&mut *store, (reader,)).await.unwrap();
 
     assert_eq!(count, 5);
+}
+
+#[tokio::test]
+async fn test_pending_export_is_settled_by_a_sibling_export() {
+    let component = TestCase::new()
+        .wit(
+            r#"package test:export-ownership;
+            world test {
+                export wait: async func(input: stream<string>, background: bool, fail: bool) -> result<u32, string>;
+                export settle: async func(value: u32) -> u32;
+            }"#,
+        )
+        .script(
+            r#"
+            let settlePending;
+            export function wait(input, background, fail) {
+                if (background) input.next();
+                else input.drop();
+                return new Promise((resolve, reject) => {
+                    settlePending = value => fail ? reject("expected failure") : resolve(value);
+                });
+            }
+            export async function settle(value) {
+                settlePending(value);
+                await Promise.resolve();
+                return value + 1;
+            }
+        "#,
+        )
+        .compile_async()
+        .await
+        .unwrap();
+    for background in [false, true] {
+        for fail in [false, true] {
+            let mut instance = AsyncComponentInstance::from_component(&component)
+                .await
+                .unwrap();
+            let (instance, store) = instance.parts();
+            let input = StreamReader::new(&mut *store, StalledStringProducer).unwrap();
+            let wait = instance
+                .get_typed_func::<(StreamReader<String>, bool, bool), (Result<u32, String>,)>(
+                    &mut *store,
+                    "wait",
+                )
+                .unwrap();
+            let settle = instance
+                .get_typed_func::<(u32,), (u32,)>(&mut *store, "settle")
+                .unwrap();
+            // Queue wait first; its promise settles while the sibling drains JS jobs.
+            // A stalled background read must not prevent task.return for wait.
+            let pending = wait
+                .start_call_concurrent(&mut *store, (input, background, fail))
+                .unwrap();
+            let results = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                store.as_context_mut().run_concurrent(async |accessor| {
+                    let (waiting, settling) = tokio::join!(
+                        wait.finish_call_concurrent(accessor, pending),
+                        settle.call_concurrent(accessor, (42,)),
+                    );
+                    (waiting.unwrap(), settling.unwrap())
+                }),
+            )
+            .await
+            .expect("sibling settlement must wake the owning export")
+            .unwrap();
+            let expected = if fail {
+                Err("expected failure".to_owned())
+            } else {
+                Ok(42)
+            };
+            assert_eq!(results, ((expected,), (43,)));
+        }
+    }
+}
+
+/// Stream adapters created while lowering a return value must start before exit.
+#[tokio::test]
+async fn test_jobs_queued_by_export_result_lowering_are_drained() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"package test:lowering-jobs;
+            world test { export values: async func() -> stream<u32>; }"#,
+        )
+        .script("export async function values() { return [1, 2, 3]; }")
+        .build_async()
+        .await
+        .unwrap();
+    let (instance, store) = instance.parts();
+    let values = instance
+        .get_typed_func::<(), (StreamReader<u32>,)>(&mut *store, "values")
+        .unwrap();
+    let (reader,) = values.call_async(&mut *store, ()).await.unwrap();
+    let output = Arc::new(Mutex::new(Vec::new()));
+    reader
+        .pipe(
+            &mut *store,
+            StreamCollector {
+                values: Arc::clone(&output),
+                expected: 3,
+            },
+        )
+        .unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        store.as_context_mut().run_concurrent(async |_| {
+            while output.lock().unwrap().len() < 3 {
+                tokio::task::yield_now().await;
+            }
+        }),
+    )
+    .await
+    .expect("returned iterable must produce without another export call")
+    .unwrap();
+    assert_eq!(*output.lock().unwrap(), [1, 2, 3]);
+}
+
+/// A JS-only wait must sleep until another export settles it, without polling.
+#[tokio::test]
+async fn test_pending_export_sleeps_without_consuming_fuel() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use wasmtime::component::{Linker, ResourceTable};
+    use wasmtime::{Config, Engine, Store};
+    use wasmtime_wasi::WasiCtxBuilder;
+
+    let wasm = TestCase::new()
+        .wit(
+            r#"package test:idle-export;
+            world test {
+                import ready: func();
+                export wait: async func() -> u32;
+                export settle: async func() -> u32;
+            }"#,
+        )
+        .script(
+            r#"
+            let resolvePending;
+            export function wait() {
+                const promise = new Promise(resolve => { resolvePending = resolve; });
+                ready();
+                return promise;
+            }
+            export async function settle() { resolvePending(42); return 43; }
+        "#,
+        )
+        .componentize()
+        .await
+        .unwrap();
+    let mut config = Config::new();
+    config.wasm_component_model_async(true);
+    config.wasm_component_model_async_stackful(true);
+    config.wasm_component_model_map(true);
+    config.consume_fuel(true);
+    let engine = Engine::new(&config).unwrap();
+    let component = Component::new(&engine, wasm).unwrap();
+    let mut store = Store::new(
+        &engine,
+        WasiCtxState {
+            wasi: WasiCtxBuilder::new().build(),
+            table: ResourceTable::new(),
+        },
+    );
+    store.set_fuel(1_000_000_000).unwrap();
+    let started = Arc::new(AtomicBool::new(false));
+    let notified = Arc::clone(&started);
+    let mut linker = Linker::new(&engine);
+    wasmtime_wasi::p2::add_to_linker_async(&mut linker).unwrap();
+    wasmtime_wasi::p3::add_to_linker(&mut linker).unwrap();
+    linker
+        .root()
+        .func_wrap("ready", move |_, (): ()| {
+            notified.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+        .unwrap();
+    let instance = linker
+        .instantiate_async(&mut store, &component)
+        .await
+        .unwrap();
+    let wait = instance
+        .get_typed_func::<(), (u32,)>(&mut store, "wait")
+        .unwrap();
+    let settle = instance
+        .get_typed_func::<(), (u32,)>(&mut store, "settle")
+        .unwrap();
+    let pending = wait.start_call_concurrent(&mut store, ()).unwrap();
+    let results = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        store.as_context_mut().run_concurrent(async |accessor| {
+            let settling = async {
+                while !started.load(Ordering::SeqCst) {
+                    tokio::task::yield_now().await;
+                }
+                let before = accessor
+                    .with(|mut store| store.as_context_mut().get_fuel())
+                    .unwrap();
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                let after = accessor
+                    .with(|mut store| store.as_context_mut().get_fuel())
+                    .unwrap();
+                assert_eq!(after, before, "an idle export must not busy-poll");
+                settle.call_concurrent(accessor, ()).await.unwrap()
+            };
+            let (waiting, settling) =
+                tokio::join!(wait.finish_call_concurrent(accessor, pending), settling,);
+            (waiting.unwrap(), settling)
+        }),
+    )
+    .await
+    .expect("sibling settlement must wake a sleeping export")
+    .unwrap();
+    assert_eq!(results, ((42,), (43,)));
 }
 
 /// Cancelling an import rejects its promise while leaving its caller able to await cleanup.

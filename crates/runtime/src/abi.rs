@@ -155,6 +155,24 @@ mod async_builtins {
         #[allow(dead_code)]
         pub(crate) fn waitable_set_wait(set: u32, payload_addr: *mut u32) -> u32;
 
+        // A private, zero-sized stream used to notify another export task.
+        #[link_name = "[stream-new-unit]"]
+        pub(crate) fn stream_new_unit() -> u64;
+        #[link_name = "[async-lower][stream-read-unit]"]
+        pub(crate) fn async_lower_stream_read_unit(stream: u32, ptr: *mut u8, count: usize) -> u32;
+        #[link_name = "[async-lower][stream-write-unit]"]
+        pub(crate) fn async_lower_stream_write_unit(
+            stream: u32,
+            ptr: *const u8,
+            count: usize,
+        ) -> u32;
+        #[link_name = "[stream-cancel-read-unit]"]
+        pub(crate) fn stream_cancel_read_unit(stream: u32) -> u32;
+        #[link_name = "[stream-drop-readable-unit]"]
+        pub(crate) fn stream_drop_readable_unit(stream: u32);
+        #[link_name = "[stream-drop-writable-unit]"]
+        pub(crate) fn stream_drop_writable_unit(stream: u32);
+
         #[link_name = "[subtask-drop]"]
         pub(crate) fn subtask_drop(task: u32);
 
@@ -207,6 +225,33 @@ mod async_builtins {
     }
 
     pub(crate) unsafe fn waitable_set_wait(_set: u32, _payload_addr: *mut u32) -> u32 {
+        async_disabled()
+    }
+
+    pub(crate) unsafe fn stream_new_unit() -> u64 {
+        async_disabled()
+    }
+    pub(crate) unsafe fn async_lower_stream_read_unit(
+        _stream: u32,
+        _ptr: *mut u8,
+        _count: usize,
+    ) -> u32 {
+        async_disabled()
+    }
+    pub(crate) unsafe fn async_lower_stream_write_unit(
+        _stream: u32,
+        _ptr: *const u8,
+        _count: usize,
+    ) -> u32 {
+        async_disabled()
+    }
+    pub(crate) unsafe fn stream_cancel_read_unit(_stream: u32) -> u32 {
+        async_disabled()
+    }
+    pub(crate) unsafe fn stream_drop_readable_unit(_stream: u32) {
+        async_disabled()
+    }
+    pub(crate) unsafe fn stream_drop_writable_unit(_stream: u32) {
         async_disabled()
     }
 
