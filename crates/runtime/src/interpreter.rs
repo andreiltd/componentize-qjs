@@ -1,14 +1,13 @@
 //! `Interpreter` trait implementation for quickjs.
 use crate::CtxExt;
-use crate::abi::Event;
+use crate::abi::{self, Event};
 use crate::bindings::register;
 use crate::exports::prepare_export;
 use crate::resources::{ResourceTable, drain_resource_drops};
 use crate::result::ResultBoundary;
-use crate::task::TaskState;
+use crate::task::{TaskState, handle_event};
 use crate::wit_imports::WitImportRegistry;
 use crate::{JsState, QjsCallContext, with_ctx};
-use crate::{abi, futures, streams};
 
 use rquickjs::{CatchResultExt, JsLifetime};
 use wit_dylib_ffi::{ExportFunction, Interpreter, Resource, Wit};
@@ -86,22 +85,7 @@ impl Interpreter for QjsInterpreter {
             unsafe { abi::context_set(0) };
         });
 
-        let evt = Event::decode(event0, event1, event2);
-
-        match evt {
-            Event::None => {}
-            Event::Subtask { handle, state } => crate::task::handle_subtask(handle, state),
-            Event::StreamWrite { handle, result } => streams::handle_write_event(handle, result),
-            Event::StreamRead { handle, result } => streams::handle_read_event(handle, result),
-            Event::FutureWrite { handle, result } => futures::handle_write_event(handle, result),
-            Event::FutureRead { handle, result } => futures::handle_read_event(handle, result),
-            Event::TaskCancelled => with_ctx(|ctx| {
-                ctx.task()
-                    .cancel(ctx)
-                    .catch(ctx)
-                    .expect("Failed to cancel async task");
-            }),
-        }
+        handle_event(Event::decode(event0, event1, event2));
 
         with_ctx(|ctx| ctx.task().poll())
     }
