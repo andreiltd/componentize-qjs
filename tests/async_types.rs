@@ -2763,3 +2763,113 @@ async fn test_host_stream_to_guest() {
 
     assert_eq!(count, 5);
 }
+
+/// Cancelling an import rejects its promise while leaving its caller able to await cleanup.
+#[tokio::test]
+async fn test_import_cancellation_preserves_export_and_stale_handles() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package wasi:clocks@0.3.0;
+            interface monotonic-clock {
+                wait-for: async func(duration: u64);
+            }
+            world cancellation {
+                import monotonic-clock;
+                export run: async func() -> bool;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            import { waitFor } from "wasi:clocks/monotonic-clock@0.3.0";
+
+            let previousCancel;
+            export async function run() {
+                const pending = waitFor(60_000_000_000n);
+                const rejected = pending.catch(error => error.message);
+                const survivor = waitFor(1_000_000n);
+                pending.cancel();
+                pending.cancel();
+                if (await rejected !== "async import cancelled") {
+                    throw new Error("cancellation did not reject the original promise");
+                }
+                await survivor;
+
+                // Completed promises cannot cancel a later operation that reuses its handle.
+                const cleanup = waitFor(1_000_000n);
+                pending.cancel();
+                survivor.cancel?.();
+                previousCancel?.();
+                await cleanup;
+                const immediate = waitFor(0n);
+                await immediate;
+                immediate.cancel?.();
+                previousCancel = pending.cancel;
+                return true;
+            }
+            "#,
+        )
+        .build_async()
+        .await
+        .expect("clock import should initialize and link");
+
+    // Reusing the instance also checks that a token from an earlier export is inert.
+    for _ in 0..2 {
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            instance.call1_async("run", &[]),
+        )
+        .await
+        .expect("cancelled import must not leave the export suspended")
+        .expect("the export must remain active for asynchronous cleanup");
+        assert_eq!(result, Val::Bool(true));
+    }
+}
+
+/// Installing cancellation must define an own property without invoking user setters.
+#[tokio::test]
+async fn test_import_cancellation_ignores_prototype_setters() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package wasi:clocks@0.3.0;
+            interface monotonic-clock { wait-for: async func(duration: u64); }
+            world cancellation {
+                import monotonic-clock;
+                export run: async func() -> bool;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            import { waitFor } from "wasi:clocks/monotonic-clock@0.3.0";
+            export async function run() {
+                Object.defineProperty(Promise.prototype, "cancel", {
+                    set() { throw new Error("cancel setter invoked"); },
+                    configurable: true,
+                });
+                try {
+                    const pending = waitFor(60_000_000_000n);
+                    const rejected = pending.catch(error => error.message);
+                    pending.cancel();
+                    return Object.hasOwn(pending, "cancel") &&
+                        await rejected === "async import cancelled";
+                } finally {
+                    delete Promise.prototype.cancel;
+                }
+            }
+            "#,
+        )
+        .build_async()
+        .await
+        .unwrap();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        instance.call1_async("run", &[]),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(result, Val::Bool(true));
+}
