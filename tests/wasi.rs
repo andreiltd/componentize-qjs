@@ -1,6 +1,7 @@
 //! WASI integration tests for componentize-qjs
 mod common;
 
+#[cfg(feature = "component-model-async")]
 use std::path::PathBuf;
 
 use wasmtime::component::Val;
@@ -227,6 +228,7 @@ fn test_wasi_resources_finalized_during_result_lowering() {
     );
 }
 
+#[cfg(feature = "component-model-async")]
 #[tokio::test]
 async fn test_wasi_0_3_stdio_example() {
     let wit_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/wasi-stdio");
@@ -258,4 +260,160 @@ async fn test_wasi_0_3_stdio_example() {
     }
 
     assert_eq!(inst.stdout_bytes(), b"hello from wasi 0.3");
+}
+
+/// Imported handles preserve transfer, loan, expiry, and disposal rules.
+#[cfg(feature = "component-model-async")]
+#[tokio::test]
+async fn test_wasi_imported_resource_lifecycle() {
+    let mut inst = TestCase::new()
+        .wit_dir(wasi_wit_dir())
+        .world("wasi-resource-lifecycle")
+        .stdin("loan")
+        .script(
+            r#"
+            import stdin from "wasi:cli/stdin@0.2.12";
+            import stdout from "wasi:cli/stdout@0.2.12";
+
+            let transferred;
+            let borrowed;
+
+            function expectTypeError(action, message) {
+                try {
+                    action();
+                } catch (error) {
+                    if (error instanceof TypeError && error.message === message) {
+                        return;
+                    }
+                    throw error;
+                }
+                throw new Error(`expected TypeError: ${message}`);
+            }
+
+            function makeOwned() {
+                transferred = stdin.getStdin();
+                return transferred;
+            }
+
+            async function readBorrowed(stream) {
+                borrowed = stream;
+                expectTypeError(() => stream.drop(), "cannot dispose a borrowed resource");
+                return stream.blockingRead(4n);
+            }
+
+            function checkInvalidStates() {
+                expectTypeError(
+                    () => transferred.blockingRead(1n),
+                    "resource ownership has already been transferred"
+                );
+                expectTypeError(
+                    () => borrowed.blockingRead(1n),
+                    "borrowed resource has expired"
+                );
+                transferred.drop();
+                borrowed.drop();
+                return true;
+            }
+
+            function checkOutgoingLoan() {
+                const output = stdout.getStdout();
+                let checked = false;
+                const bytes = [120];
+                Object.defineProperty(bytes, 0, {
+                    get() {
+                        expectTypeError(
+                            () => output.drop(),
+                            "cannot dispose a resource while it is borrowed"
+                        );
+                        checked = true;
+                        return 120;
+                    }
+                });
+                output.blockingWriteAndFlush(bytes);
+                output.drop();
+                if (!checked) throw new Error("outgoing loan was not checked");
+            }
+
+            function disposeOwned(stream) {
+                stream.drop();
+                stream.drop();
+                expectTypeError(() => stream.blockingRead(1n), "resource has been disposed");
+                return true;
+            }
+
+            export const resourceLifecycle = {
+                makeOwned,
+                readBorrowed,
+                checkInvalidStates,
+                checkOutgoingLoan,
+                disposeOwned,
+            };
+            "#,
+        )
+        .build_async()
+        .await
+        .expect("should build imported-resource lifecycle component");
+
+    let (instance, store) = inst.parts();
+    let interface = instance
+        .get_export_index(&mut *store, None, "test:wasi/resource-lifecycle")
+        .expect("resource-lifecycle interface not found");
+    let [
+        make_owned,
+        read_borrowed,
+        check_invalid_states,
+        check_outgoing_loan,
+        dispose_owned,
+    ] = [
+        "make-owned",
+        "read-borrowed",
+        "check-invalid-states",
+        "check-outgoing-loan",
+        "dispose-owned",
+    ]
+    .map(|name| {
+        let index = instance
+            .get_export_index(&mut *store, Some(&interface), name)
+            .expect("resource-lifecycle function not found");
+        instance.get_func(&mut *store, index).unwrap()
+    });
+
+    let mut results = [Val::Bool(false)];
+    make_owned
+        .call_async(&mut *store, &[], &mut results)
+        .await
+        .unwrap();
+    let stream = results[0].clone();
+    read_borrowed
+        .call_async(&mut *store, std::slice::from_ref(&stream), &mut results)
+        .await
+        .unwrap();
+    assert_eq!(
+        results[0],
+        Val::List(b"loan".iter().copied().map(Val::U8).collect())
+    );
+    check_invalid_states
+        .call_async(&mut *store, &[], &mut results)
+        .await
+        .unwrap();
+    assert_eq!(results[0], Val::Bool(true));
+    assert!(
+        !store.data().table.is_empty(),
+        "ending a borrow must not destroy its owner"
+    );
+
+    check_outgoing_loan
+        .call_async(&mut *store, &[], &mut [])
+        .await
+        .unwrap();
+    dispose_owned
+        .call_async(&mut *store, &[stream], &mut results)
+        .await
+        .unwrap();
+    assert_eq!(results[0], Val::Bool(true));
+    assert!(
+        store.data().table.is_empty(),
+        "explicit disposal should release every owned handle"
+    );
+    assert_eq!(inst.stdout_bytes(), b"x");
 }

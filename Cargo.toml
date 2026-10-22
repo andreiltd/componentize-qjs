@@ -23,7 +23,7 @@ ureq = "3"
 tokio = { version = "1", default-features = false, features = ["rt", "macros"] }
 wasmtime = { version = "50", features = ["component-model", "async"] }
 wasmtime-wasi = { version = "50", default-features = false, features = ["p2", "p3"] }
-wit-parser = "0.258"
+wit-parser = "0.262"
 
 [package]
 name = "componentize-qjs-cli"

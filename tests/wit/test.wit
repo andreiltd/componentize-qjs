@@ -40,6 +40,24 @@ world wasi-resource-cleanup {
     export flush: func();
 }
 
+interface resource-lifecycle {
+    use wasi:io/streams@0.2.12.{input-stream};
+
+    make-owned: func() -> own<input-stream>;
+    read-borrowed: async func(input: borrow<input-stream>) -> list<u8>;
+    check-invalid-states: func() -> bool;
+    check-outgoing-loan: func();
+    dispose-owned: func(input: own<input-stream>) -> bool;
+}
+
+world wasi-resource-lifecycle {
+    import wasi:cli/stdin@0.2.12;
+    import wasi:cli/stdout@0.2.12;
+    import wasi:io/streams@0.2.12;
+
+    export resource-lifecycle;
+}
+
 world wasi-import-types {
     import wasi:filesystem/types@0.2.12;
 

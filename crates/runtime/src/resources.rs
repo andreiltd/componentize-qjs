@@ -14,12 +14,50 @@ use wit_dylib_ffi::Resource;
 
 use crate::{CtxExt, DetHashMap, symbol_dispose};
 
+/// Defers owned-handle destruction until the runtime reaches a safe host-call point.
 #[derive(Default)]
 struct ResourceDropQueue {
     pending: RefCell<VecDeque<(Resource, u32)>>,
     draining: Cell<bool>,
 }
 
+/// Clear the re-entry flag even if a destructor unwinds.
+struct DrainGuard<'a>(&'a Cell<bool>);
+
+impl Drop for DrainGuard<'_> {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
+}
+
+impl ResourceDropQueue {
+    /// Queue an abandoned owned handle without invoking JS or the host.
+    fn enqueue(&self, resource: (Resource, u32)) {
+        self.pending.borrow_mut().push_back(resource);
+    }
+
+    /// Run queued destructors at a safe point, ignoring re-entrant drain attempts.
+    ///
+    /// Release each queue borrow before calling a potentially re-entrant host.
+    fn drain(&self) {
+        if self.draining.replace(true) {
+            return;
+        }
+
+        let _guard = DrainGuard(&self.draining);
+
+        loop {
+            let resource = self.pending.borrow_mut().pop_front();
+            let Some((ty, handle)) = resource else {
+                break;
+            };
+
+            unsafe { ty.drop()(handle) };
+        }
+    }
+}
+
+/// Native ownership and validity of an imported handle.
 #[derive(Clone, Copy)]
 enum Ownership {
     Owned(u32),
@@ -30,6 +68,7 @@ enum Ownership {
     Expired,
 }
 
+/// Shared ownership rules and outgoing loans for one imported handle.
 struct ImportedResourceState {
     ty: Resource,
     ownership: Cell<Ownership>,
@@ -38,18 +77,22 @@ struct ImportedResourceState {
 }
 
 impl ImportedResourceState {
-    fn take_owned(&self) -> Option<(Resource, u32)> {
-        let Ownership::Owned(handle) = self.ownership.get() else {
-            return None;
-        };
-        self.ownership.set(Ownership::Disposed);
-        Some((self.ty, handle))
+    /// Create ownership state with no outstanding loans.
+    fn new(ty: Resource, ownership: Ownership, drops: Rc<ResourceDropQueue>) -> Self {
+        Self {
+            ty,
+            ownership: Cell::new(ownership),
+            loans: Cell::new(0),
+            drops,
+        }
     }
 
+    /// Check the resource type and requested use without changing ownership.
     fn validate(&self, ty: Resource, owned: bool) -> Result<u32, &'static str> {
         if self.ty != ty {
             return Err("imported resource has the wrong WIT resource type");
         }
+
         match self.ownership.get() {
             Ownership::Owned(_) if owned && self.loans.get() != 0 => {
                 Err("cannot transfer ownership of a resource while it is borrowed")
@@ -63,13 +106,93 @@ impl ImportedResourceState {
             Ownership::Expired => Err("borrowed resource has expired"),
         }
     }
+
+    /// Validate a borrow and retain state until its outgoing loan ends.
+    fn borrow(self: Rc<Self>, ty: Resource) -> Result<(u32, ImportedResourceLoan), &'static str> {
+        let handle = self.validate(ty, false)?;
+        let loans = self
+            .loans
+            .get()
+            .checked_add(1)
+            .ok_or("too many outstanding imported resource borrows")?;
+
+        self.loans.set(loans);
+        Ok((handle, ImportedResourceLoan { state: self }))
+    }
+
+    /// Release one outgoing loan without invoking the host.
+    fn release_loan(&self) {
+        self.loans.set(self.loans.get() - 1);
+    }
+
+    /// Reserve an owned handle until its transfer guard commits or rolls back.
+    fn begin_transfer(
+        self: Rc<Self>,
+        ty: Resource,
+    ) -> Result<(u32, ImportedResourceTransfer), &'static str> {
+        let handle = self.validate(ty, true)?;
+        self.ownership.set(Ownership::Transferring);
+
+        Ok((
+            handle,
+            ImportedResourceTransfer {
+                state: self,
+                handle,
+            },
+        ))
+    }
+
+    /// Mark a reserved handle as consumed by the canonical ABI.
+    fn commit_transfer(&self) {
+        self.ownership.set(Ownership::Transferred);
+    }
+
+    /// Restore ownership only if the transfer has not been committed.
+    fn rollback_transfer(&self, handle: u32) {
+        if matches!(self.ownership.get(), Ownership::Transferring) {
+            self.ownership.set(Ownership::Owned(handle));
+        }
+    }
+
+    /// Validate explicit disposal and invalidate the handle before any host call.
+    fn dispose(&self) -> Result<Option<(Resource, u32)>, &'static str> {
+        match self.ownership.get() {
+            Ownership::Borrowed(_) => Err("cannot dispose a borrowed resource"),
+            Ownership::Transferring => Err("cannot dispose a resource during ownership transfer"),
+            Ownership::Owned(_) if self.loans.get() != 0 => {
+                Err("cannot dispose a resource while it is borrowed")
+            }
+            _ => Ok(self.take_owned()),
+        }
+    }
+
+    /// Expire an incoming borrow after every outgoing loan has finished.
+    fn expire_borrow(&self) {
+        assert_eq!(
+            self.loans.get(),
+            0,
+            "borrowed resource still used by an outstanding import at the end of its call"
+        );
+
+        self.ownership.set(Ownership::Expired);
+    }
+
+    /// Take an owned handle exactly once, marking it disposed.
+    fn take_owned(&self) -> Option<(Resource, u32)> {
+        let Ownership::Owned(handle) = self.ownership.get() else {
+            return None;
+        };
+
+        self.ownership.set(Ownership::Disposed);
+        Some((self.ty, handle))
+    }
 }
 
 impl Drop for ImportedResourceState {
     fn drop(&mut self) {
         // This can run inside QuickJS's GC: no JS values or host calls here.
         if let Some(resource) = self.take_owned() {
-            self.drops.pending.borrow_mut().push_back(resource);
+            self.drops.enqueue(resource);
         }
     }
 }
@@ -110,12 +233,7 @@ pub(crate) struct BorrowedResource {
 
 impl Drop for BorrowedResource {
     fn drop(&mut self) {
-        assert_eq!(
-            self.state.loans.get(),
-            0,
-            "borrowed resource still used by an outstanding import at the end of its call"
-        );
-        self.state.ownership.set(Ownership::Expired);
+        self.state.expire_borrow();
         unsafe { self.state.ty.drop()(self.handle) };
     }
 }
@@ -132,7 +250,7 @@ pub(crate) struct ImportedResourceLoan {
 
 impl Drop for ImportedResourceLoan {
     fn drop(&mut self) {
-        self.state.loans.set(self.state.loans.get() - 1);
+        self.state.release_loan();
     }
 }
 
@@ -144,16 +262,15 @@ pub(crate) struct ImportedResourceTransfer {
 }
 
 impl ImportedResourceTransfer {
+    /// Commit ownership once the canonical ABI has consumed the handle.
     pub(crate) fn commit(self) {
-        self.state.ownership.set(Ownership::Transferred);
+        self.state.commit_transfer();
     }
 }
 
 impl Drop for ImportedResourceTransfer {
     fn drop(&mut self) {
-        if matches!(self.state.ownership.get(), Ownership::Transferring) {
-            self.state.ownership.set(Ownership::Owned(self.handle));
-        }
+        self.state.rollback_transfer(self.handle);
     }
 }
 
@@ -181,12 +298,10 @@ pub(crate) fn make_imported_owned<'js>(
     ty: Resource,
     handle: u32,
 ) -> rquickjs::Result<Value<'js>> {
-    let state = Rc::new(ImportedResourceState {
-        ty,
-        ownership: Cell::new(Ownership::Owned(handle)),
-        loans: Cell::new(0),
-        drops: Rc::clone(&ctx.resource_classes().drops),
-    });
+    let ownership = Ownership::Owned(handle);
+    let drops = Rc::clone(&ctx.resource_classes().drops);
+    let state = Rc::new(ImportedResourceState::new(ty, ownership, drops));
+
     make_imported(ctx, ImportedResource { state })
 }
 
@@ -198,12 +313,10 @@ pub(crate) fn make_imported_borrowed<'js>(
     ty: Resource,
     handle: u32,
 ) -> rquickjs::Result<(Value<'js>, BorrowedResource)> {
-    let state = Rc::new(ImportedResourceState {
-        ty,
-        ownership: Cell::new(Ownership::Borrowed(handle)),
-        loans: Cell::new(0),
-        drops: Rc::clone(&ctx.resource_classes().drops),
-    });
+    let ownership = Ownership::Borrowed(handle);
+    let drops = Rc::clone(&ctx.resource_classes().drops);
+    let state = Rc::new(ImportedResourceState::new(ty, ownership, drops));
+
     let guard = BorrowedResource {
         state: Rc::clone(&state),
         handle,
@@ -218,14 +331,7 @@ fn dispose_imported_resource<'js>(
 ) -> rquickjs::Result<()> {
     let resource = {
         let resource = this.0.try_borrow()?;
-        match resource.state.ownership.get() {
-            Ownership::Borrowed(_) => Err("cannot dispose a borrowed resource"),
-            Ownership::Transferring => Err("cannot dispose a resource during ownership transfer"),
-            Ownership::Owned(_) if resource.state.loans.get() != 0 => {
-                Err("cannot dispose a resource while it is borrowed")
-            }
-            _ => Ok(resource.state.take_owned()),
-        }
+        resource.state.dispose()
     }
     .map_err(|message| Exception::throw_type(&ctx, message))?;
 
@@ -243,28 +349,9 @@ fn dispose_imported_resource<'js>(
 /// where imports and intrinsics are forbidden. Teardown must drain before
 /// destroying runtime state; neither finalizers nor dropping the queue call hosts.
 pub(crate) fn drain_resource_drops(ctx: &Ctx<'_>) {
+    // No userdata guard may survive a potentially re-entrant host destructor.
     let drops = Rc::clone(&ctx.resource_classes().drops);
-    if drops.draining.replace(true) {
-        return;
-    }
-
-    struct DrainGuard<'a>(&'a Cell<bool>);
-
-    impl Drop for DrainGuard<'_> {
-        fn drop(&mut self) {
-            self.0.set(false);
-        }
-    }
-
-    let _guard = DrainGuard(&drops.draining);
-    loop {
-        let resource = drops.pending.borrow_mut().pop_front();
-        let Some((ty, handle)) = resource else {
-            break;
-        };
-        // No userdata or RefCell guard may survive this potentially re-entrant call.
-        unsafe { ty.drop()(handle) };
-    }
+    drops.drain();
 }
 
 /// Table mapping `rep` indices to JS objects for exported resources.
@@ -385,15 +472,9 @@ pub(crate) fn borrow_imported_resource(
     ty: Resource,
     val: &Value<'_>,
 ) -> rquickjs::Result<(u32, ImportedResourceLoan)> {
-    let state = imported_resource_state(val)?;
-    let handle = state
-        .validate(ty, false)
-        .map_err(|message| Exception::throw_type(val.ctx(), message))?;
-    let loans = state.loans.get().checked_add(1).ok_or_else(|| {
-        Exception::throw_type(val.ctx(), "too many outstanding imported resource borrows")
-    })?;
-    state.loans.set(loans);
-    Ok((handle, ImportedResourceLoan { state }))
+    imported_resource_state(val)?
+        .borrow(ty)
+        .map_err(|message| Exception::throw_type(val.ctx(), message))
 }
 
 /// Reserve ownership until the canonical ABI reports whether it consumed a value.
@@ -401,12 +482,9 @@ pub(crate) fn transfer_imported_resource(
     ty: Resource,
     val: &Value<'_>,
 ) -> rquickjs::Result<(u32, ImportedResourceTransfer)> {
-    let state = imported_resource_state(val)?;
-    let handle = state
-        .validate(ty, true)
-        .map_err(|message| Exception::throw_type(val.ctx(), message))?;
-    state.ownership.set(Ownership::Transferring);
-    Ok((handle, ImportedResourceTransfer { state, handle }))
+    imported_resource_state(val)?
+        .begin_transfer(ty)
+        .map_err(|message| Exception::throw_type(val.ctx(), message))
 }
 
 /// Convert a js object to a canonical handle for an exported resource.

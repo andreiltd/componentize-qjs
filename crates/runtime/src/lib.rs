@@ -5,6 +5,7 @@ mod call;
 mod endpoint;
 mod exports;
 mod futures;
+mod imports;
 mod interpreter;
 mod module;
 mod resources;
@@ -16,17 +17,18 @@ mod trivia;
 mod typed_array;
 mod wit_imports;
 
+pub use call::QjsCallContext;
+
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::hash_map::DefaultHasher;
 
 use rquickjs::runtime::UserDataGuard;
-use rquickjs::{Context, JsLifetime, Persistent, Runtime, Value};
-use smallvec::SmallVec;
+use rquickjs::{Context, JsLifetime, Runtime};
 use task::TaskState;
 use wit_dylib_ffi::Wit;
 
 use crate::interpreter::WitData;
-use crate::resources::*;
+use crate::resources::{ResourceClasses, ResourceTable};
 use crate::trivia::*;
 
 /// Deterministic, fixed-seed hash map/set used everywhere in the runtime so the
@@ -212,92 +214,6 @@ impl init::Guest for InitImpl {
         disable_gc: bool,
     ) -> Result<(), String> {
         init_js(&shim, &js, entry_path.as_deref(), disable_gc)
-    }
-}
-
-/// Call context for export/import invocations.
-#[derive(Default)]
-pub struct QjsCallContext {
-    /// Value stack for WIT to JS: arguments in, result out
-    stack: Vec<Persistent<Value<'static>>>,
-    /// Tracks current index per nested list iteration
-    iter_stack: SmallVec<[usize; 4]>,
-    /// Keeps borrowed `&str` returns alive across FFI boundaries
-    temp_strings: SmallVec<[String; 4]>,
-    /// Raw allocations to free when this context is dropped
-    deferred_deallocs: SmallVec<[(*mut u8, std::alloc::Layout); 4]>,
-    /// Keeps imported resources alive while an outgoing call borrows them
-    loans: SmallVec<[ImportedResourceLoan; 4]>,
-    /// Own transfers grouped by stream element, or group zero for ordinary calls
-    transfers: SmallVec<[(usize, ImportedResourceTransfer); 4]>,
-    /// Number of transfer groups consumed by the callee,
-    transfer_group: usize,
-    /// Imported resource borrows to drop when this context is dropped
-    borrows: SmallVec<[BorrowedResource; 4]>,
-}
-
-impl QjsCallContext {
-    pub(crate) fn complete_transfers(&mut self, consumed_groups: usize) {
-        for (group, transfer) in self.transfers.drain(..) {
-            if group < consumed_groups {
-                transfer.commit();
-            }
-        }
-    }
-
-    pub(crate) fn push_value<'js>(&mut self, ctx: &rquickjs::Ctx<'js>, val: Value<'js>) {
-        self.stack.push(Persistent::save(ctx, val));
-    }
-
-    pub(crate) fn pop_value<'js>(&mut self, ctx: &rquickjs::Ctx<'js>) -> Value<'js> {
-        self.pop_persistent().restore(ctx).expect("stack underflow")
-    }
-
-    /// Drain canonical arguments in call order, retaining storage for the result.
-    pub(crate) fn drain_values(
-        &mut self,
-    ) -> impl ExactSizeIterator<Item = Persistent<Value<'static>>> {
-        self.stack.drain(..)
-    }
-
-    /// Take canonical arguments in call order without allocating another vector.
-    ///
-    /// The iterator does not borrow this context, so async dispatch can retain its
-    /// resource guards in the active task before looking up JavaScript exports.
-    pub(crate) fn take_values(&mut self) -> std::vec::IntoIter<Persistent<Value<'static>>> {
-        std::mem::take(&mut self.stack).into_iter()
-    }
-
-    pub(crate) fn pop_persistent(&mut self) -> Persistent<Value<'static>> {
-        self.stack.pop().expect("stack underflow")
-    }
-
-    pub(crate) fn maybe_pop_persistent(&mut self) -> Option<Persistent<Value<'static>>> {
-        self.stack.pop()
-    }
-
-    pub(crate) fn maybe_pop_value<'js>(
-        &mut self,
-        ctx: &rquickjs::Ctx<'js>,
-    ) -> rquickjs::Result<Option<Value<'js>>> {
-        self.maybe_pop_persistent()
-            .map(|persistent| persistent.restore(ctx))
-            .transpose()
-    }
-}
-
-impl Drop for QjsCallContext {
-    fn drop(&mut self) {
-        self.transfers.clear();
-        for (ptr, layout) in self.deferred_deallocs.drain(..) {
-            if layout.size() > 0 {
-                unsafe {
-                    std::alloc::dealloc(ptr, layout);
-                }
-            }
-        }
-        self.loans.clear();
-        self.borrows.clear();
     }
 }
 

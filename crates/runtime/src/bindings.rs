@@ -2,20 +2,17 @@
 use heck::{ToLowerCamelCase, ToUpperCamelCase};
 use rquickjs::Persistent;
 use rquickjs::function::{Constructor, Rest, This};
-use rquickjs::object::Property;
 use rquickjs::{Ctx, Function, Object, Value};
 use smallvec::SmallVec;
-use std::rc::Rc;
-use wit_dylib_ffi::{Resource, Type, Wit};
+use wit_dylib_ffi::{Resource, Wit};
 
 use crate::CtxExt;
 use crate::futures::{make_future, register_future_classes};
-use crate::resources::{imported_resource_prototype, validate_imported_resource};
-use crate::result::ResultBoundary;
+use crate::imports::ImportCall;
+use crate::resources::imported_resource_prototype;
 use crate::streams::{make_stream, register_stream_classes};
-use crate::task::Pending;
 use crate::wit_imports::{FuncKind, WitInterface, classify, find_resource};
-use crate::{DetHashMap, DetHashSet, DetIndexMap, QjsCallContext, coerce_fn};
+use crate::{DetHashSet, DetIndexMap, coerce_fn};
 
 /// Register all wit bindings on the js global scope.
 pub(crate) fn register(ctx: &rquickjs::Ctx<'_>, wit_def: Wit) -> rquickjs::Result<()> {
@@ -198,101 +195,13 @@ fn register_root_imports(ctx: &rquickjs::Ctx<'_>) -> rquickjs::Result<()> {
     Ok(())
 }
 
+/// Adapt a JS binding invocation to its validated canonical import call.
 fn call_import<'js>(
     ctx: rquickjs::Ctx<'js>,
     func_index: usize,
     args: SmallVec<[Value<'js>; 8]>,
 ) -> rquickjs::Result<Value<'js>> {
-    let wit_def = ctx.wit();
-    let func = wit_def.import_func(func_index);
-
-    let param_count = func.params().len();
-    if args.len() < param_count {
-        return Err(rquickjs::Exception::throw_type(
-            &ctx,
-            &format!("{} requires {param_count} arguments", func.name()),
-        ));
-    }
-
-    let mut resources = DetHashMap::default();
-    for (mut ty, arg) in func.params().zip(&args) {
-        while let Type::Alias(alias) = ty {
-            ty = alias.ty();
-        }
-        let (resource, owned) = match ty {
-            Type::Own(resource) => (resource, true),
-            Type::Borrow(resource) => (resource, false),
-            _ => continue,
-        };
-        if resource.new().is_some() {
-            continue;
-        }
-        let handle = validate_imported_resource(resource, arg, owned)?;
-        if let Some(was_owned) = resources.insert((resource.index(), handle), owned)
-            && (was_owned || owned)
-        {
-            return Err(rquickjs::Exception::throw_type(
-                &ctx,
-                "a transferred resource cannot be used by another argument in the same call",
-            ));
-        }
-    }
-
-    let boundary = ResultBoundary::new(func.result());
-    let mut call = QjsCallContext::default();
-    for arg in args.into_iter().rev() {
-        call.push_value(&ctx, arg);
-    }
-
-    if func.is_async() {
-        ctx.task().ensure_active(&ctx)?;
-        let (promise, resolve, reject) = ctx.promise()?;
-
-        if let Some(pending) = unsafe { func.call_import_async(&mut call) } {
-            let handle = pending.subtask;
-            let buffer = pending.buffer;
-            let token = Rc::new(());
-            let cancel_token = token.clone();
-            // Cancel only this import so its caller can finish asynchronous
-            // cleanup. A token prevents cancellation after handle reuse.
-            // Define an own data property: assignment could invoke an inherited
-            // setter while the host still owns this call's ABI buffers.
-            promise.prop(
-                "cancel",
-                Property::from(Function::new(ctx.clone(), move |ctx: Ctx<'_>| {
-                    ctx.task().cancel_import(&ctx, handle, &cancel_token)
-                })?)
-                .writable()
-                .configurable()
-                .enumerable(),
-            )?;
-
-            let resolve = Persistent::save(&ctx, resolve);
-            let reject = Persistent::save(&ctx, reject);
-            let pending = Pending::ImportCall {
-                func_index,
-                call,
-                buffer,
-                resolve,
-                reject,
-                token,
-            };
-            ctx.task().register(handle, pending);
-        } else {
-            call.complete_transfers(1);
-            boundary
-                .lift(&ctx, call.maybe_pop_value(&ctx)?)?
-                .settle(&resolve, &reject)?;
-        }
-
-        Ok(promise.into_value())
-    } else {
-        func.call_import_sync(&mut call);
-        call.complete_transfers(1);
-        boundary
-            .lift(&ctx, call.maybe_pop_value(&ctx)?)?
-            .into_result(&ctx)
-    }
+    ImportCall::new(&ctx, ctx.wit().import_func(func_index), args)?.invoke(&ctx)
 }
 
 /// Register the `__cqjs` namespace object on globalThis.

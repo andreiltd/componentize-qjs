@@ -1,15 +1,17 @@
-//! `Call` trait implementation for quickjs to/from wit type conversions.
+//! Canonical call state, resource lifetimes, and QuickJS/WIT conversions.
+
 use crate::CtxExt;
 use crate::futures::{FutureReadable, FutureWritable};
 use crate::resources::{
-    borrow_imported_resource, exported_resource_to_handle, make_imported_borrowed,
-    make_imported_owned, transfer_imported_resource,
+    BorrowedResource, ImportedResourceLoan, ImportedResourceTransfer, borrow_imported_resource,
+    exported_resource_to_handle, make_imported_borrowed, make_imported_owned,
+    transfer_imported_resource,
 };
 use crate::streams::{StreamReadable, StreamWritable};
 use crate::tagged::decode_tagged;
 use crate::trivia::fn_lookup;
 use crate::typed_array::try_typed_array_copy;
-use crate::{QjsCallContext, with_ctx};
+use crate::with_ctx;
 
 use rquickjs::class::Class;
 use rquickjs::function::This;
@@ -24,9 +26,134 @@ use wit_dylib_ffi::{
 
 use std::alloc::Layout;
 
+/// Owns conversion values and resource guards for one import or export call.
+#[derive(Default)]
+pub struct QjsCallContext {
+    /// Value stack for WIT to JS: arguments in, result out.
+    stack: Vec<Persistent<Value<'static>>>,
+    /// Tracks the current index per nested list iteration.
+    iter_stack: SmallVec<[usize; 4]>,
+    /// Keeps borrowed `&str` returns alive across FFI boundaries.
+    temp_strings: SmallVec<[String; 4]>,
+    /// Raw allocations to free when this context is dropped.
+    deferred_deallocs: SmallVec<[(*mut u8, Layout); 4]>,
+    /// Keeps imported resources alive while an outgoing call borrows them.
+    loans: SmallVec<[ImportedResourceLoan; 4]>,
+    /// Own transfers grouped by stream element, or group zero for ordinary calls.
+    transfers: SmallVec<[(usize, ImportedResourceTransfer); 4]>,
+    /// Group assigned to subsequently lowered owned resources.
+    transfer_group: usize,
+    /// Imported resource borrows to drop when this context is dropped.
+    borrows: SmallVec<[BorrowedResource; 4]>,
+}
+
+impl QjsCallContext {
+    /// Commit consumed groups and roll back unconsumed ownership transfers.
+    pub(crate) fn complete_transfers(&mut self, consumed_groups: usize) {
+        for (group, transfer) in self.transfers.drain(..) {
+            if group < consumed_groups {
+                transfer.commit();
+            }
+        }
+    }
+
+    /// Push a stream element, grouping its owned transfers by element index.
+    pub(crate) fn push_stream_element<'js>(
+        &mut self,
+        ctx: &rquickjs::Ctx<'js>,
+        value: Value<'js>,
+        index: usize,
+    ) {
+        self.transfer_group = index;
+        self.push_value(ctx, value);
+    }
+
+    /// Retain a JS value on the conversion stack.
+    pub(crate) fn push_value<'js>(&mut self, ctx: &rquickjs::Ctx<'js>, val: Value<'js>) {
+        self.stack.push(Persistent::save(ctx, val));
+    }
+
+    /// Restore and remove the top conversion value.
+    pub(crate) fn pop_value<'js>(&mut self, ctx: &rquickjs::Ctx<'js>) -> Value<'js> {
+        self.pop_persistent().restore(ctx).expect("stack underflow")
+    }
+
+    /// Drain canonical arguments in call order, retaining storage for the result.
+    pub(crate) fn drain_values(
+        &mut self,
+    ) -> impl ExactSizeIterator<Item = Persistent<Value<'static>>> {
+        self.stack.drain(..)
+    }
+
+    /// Take canonical arguments in call order without allocating another vector.
+    ///
+    /// The iterator does not borrow this context, so async dispatch can retain its
+    /// resource guards in the active task before looking up JavaScript exports.
+    pub(crate) fn take_values(&mut self) -> std::vec::IntoIter<Persistent<Value<'static>>> {
+        std::mem::take(&mut self.stack).into_iter()
+    }
+
+    /// Remove the top persistent value, requiring a nonempty stack.
+    fn pop_persistent(&mut self) -> Persistent<Value<'static>> {
+        self.stack.pop().expect("stack underflow")
+    }
+
+    /// Remove the top persistent value if one is present.
+    fn maybe_pop_persistent(&mut self) -> Option<Persistent<Value<'static>>> {
+        self.stack.pop()
+    }
+
+    /// Restore and remove an optional conversion result.
+    pub(crate) fn maybe_pop_value<'js>(
+        &mut self,
+        ctx: &rquickjs::Ctx<'js>,
+    ) -> rquickjs::Result<Option<Value<'js>>> {
+        self.maybe_pop_persistent()
+            .map(|persistent| persistent.restore(ctx))
+            .transpose()
+    }
+
+    /// Pop a value, restore it in the active JS context, and transform it.
+    fn pop_with<R: 'static>(&mut self, f: impl FnOnce(Value<'_>) -> R) -> R {
+        let persistent = self.pop_persistent();
+
+        with_ctx(|ctx| {
+            let v = persistent.restore(ctx).unwrap();
+            f(v)
+        })
+    }
+
+    /// Create a value in the active JS context and retain it on the stack.
+    fn push_with(&mut self, f: impl for<'js> FnOnce(&rquickjs::Ctx<'js>) -> Value<'js>) {
+        with_ctx(|ctx| {
+            let v = f(ctx);
+            self.push_value(ctx, v);
+        });
+    }
+}
+
+impl Drop for QjsCallContext {
+    /// Roll back transfers and free buffers before releasing loans and borrows.
+    fn drop(&mut self) {
+        self.transfers.clear();
+
+        for (ptr, layout) in self.deferred_deallocs.drain(..) {
+            if layout.size() > 0 {
+                unsafe {
+                    std::alloc::dealloc(ptr, layout);
+                }
+            }
+        }
+
+        self.loans.clear();
+        self.borrows.clear();
+    }
+}
+
 /// Whether an option's payload is itself an option (after resolving aliases).
 fn option_is_nested(ty: WitOption) -> bool {
     let mut inner = ty.ty();
+
     loop {
         match inner {
             Type::Option(_) => return true,
@@ -36,58 +163,41 @@ fn option_is_nested(ty: WitOption) -> bool {
     }
 }
 
-/// Pop a value from the stack, restore it in the current JS context, and transform it.
-fn pop_with<R: 'static>(cx: &mut QjsCallContext, f: impl FnOnce(Value<'_>) -> R) -> R {
-    let persistent = cx.pop_persistent();
-    with_ctx(|ctx| {
-        let v = persistent.restore(ctx).unwrap();
-        f(v)
-    })
-}
-
-/// Create a JS value in the current context and push it onto the stack.
-fn push_with(cx: &mut QjsCallContext, f: impl for<'js> FnOnce(&rquickjs::Ctx<'js>) -> Value<'js>) {
-    with_ctx(|ctx| {
-        let v = f(ctx);
-        cx.push_value(ctx, v);
-    });
-}
-
 impl Call for QjsCallContext {
     unsafe fn defer_deallocate(&mut self, ptr: *mut u8, layout: Layout) {
         self.deferred_deallocs.push((ptr, layout));
     }
 
     fn pop_bool(&mut self) -> bool {
-        pop_with(self, |v| v.as_bool().expect("expected bool"))
+        self.pop_with(|v| v.as_bool().expect("expected bool"))
     }
 
     fn pop_u8(&mut self) -> u8 {
-        pop_with(self, |v| v.get::<i32>().expect("expected number") as u8)
+        self.pop_with(|v| v.get::<i32>().expect("expected number") as u8)
     }
 
     fn pop_s8(&mut self) -> i8 {
-        pop_with(self, |v| v.get::<i32>().expect("expected number") as i8)
+        self.pop_with(|v| v.get::<i32>().expect("expected number") as i8)
     }
 
     fn pop_u16(&mut self) -> u16 {
-        pop_with(self, |v| v.get::<i32>().expect("expected number") as u16)
+        self.pop_with(|v| v.get::<i32>().expect("expected number") as u16)
     }
 
     fn pop_s16(&mut self) -> i16 {
-        pop_with(self, |v| v.get::<i32>().expect("expected number") as i16)
+        self.pop_with(|v| v.get::<i32>().expect("expected number") as i16)
     }
 
     fn pop_u32(&mut self) -> u32 {
-        pop_with(self, |v| v.get::<i32>().expect("expected number") as u32)
+        self.pop_with(|v| v.get::<i32>().expect("expected number") as u32)
     }
 
     fn pop_s32(&mut self) -> i32 {
-        pop_with(self, |v| v.get().expect("expected number"))
+        self.pop_with(|v| v.get().expect("expected number"))
     }
 
     fn pop_u64(&mut self) -> u64 {
-        pop_with(self, |v| {
+        self.pop_with(|v| {
             assert!(v.is_big_int(), "expected bigint");
             let mut result = 0;
             let status = unsafe {
@@ -99,7 +209,7 @@ impl Call for QjsCallContext {
     }
 
     fn pop_s64(&mut self) -> i64 {
-        pop_with(self, |v| {
+        self.pop_with(|v| {
             assert!(v.is_big_int(), "expected bigint");
             let mut result = 0;
             let status = unsafe {
@@ -111,15 +221,15 @@ impl Call for QjsCallContext {
     }
 
     fn pop_f32(&mut self) -> f32 {
-        pop_with(self, |v| v.get::<f64>().expect("expected number") as f32)
+        self.pop_with(|v| v.get::<f64>().expect("expected number") as f32)
     }
 
     fn pop_f64(&mut self) -> f64 {
-        pop_with(self, |v| v.get().expect("expected number"))
+        self.pop_with(|v| v.get().expect("expected number"))
     }
 
     fn pop_char(&mut self) -> char {
-        pop_with(self, |v| {
+        self.pop_with(|v| {
             let s = v.get::<String>().expect("expected string");
             let mut chars = s.chars();
             let c = chars.next().expect("expected non-empty string for char");
@@ -327,6 +437,7 @@ impl Call for QjsCallContext {
             let val = persistent.restore(ctx).unwrap();
             let obj = val.as_object().expect("expected flags object");
             let mut bits = 0u32;
+
             for (i, name) in ty.names().enumerate() {
                 let set = obj
                     .get::<_, Coerced<bool>>(fn_lookup(ctx, name))
@@ -390,6 +501,7 @@ impl Call for QjsCallContext {
         with_ctx(|ctx| {
             let val = persistent.restore(ctx).unwrap();
             let obj = val.as_object().expect("expected object");
+
             for (name, _) in ty.fields().rev() {
                 let field: Value = obj.get(fn_lookup(ctx, name)).unwrap();
                 self.stack.push(Persistent::save(ctx, field));
@@ -398,7 +510,7 @@ impl Call for QjsCallContext {
     }
 
     fn pop_future(&mut self, ty: Future) -> u32 {
-        pop_with(self, |v| {
+        self.pop_with(|v| {
             if let Ok(class) = Class::<FutureReadable>::from_value(&v) {
                 return class
                     .borrow_mut()
@@ -464,59 +576,55 @@ impl Call for QjsCallContext {
 
     // Push operations
     fn push_bool(&mut self, val: bool) {
-        push_with(self, |ctx| val.into_js(ctx).unwrap());
+        self.push_with(|ctx| val.into_js(ctx).unwrap());
     }
 
     fn push_u8(&mut self, val: u8) {
-        push_with(self, |ctx| val.into_js(ctx).unwrap());
+        self.push_with(|ctx| val.into_js(ctx).unwrap());
     }
 
     fn push_s8(&mut self, val: i8) {
-        push_with(self, |ctx| val.into_js(ctx).unwrap());
+        self.push_with(|ctx| val.into_js(ctx).unwrap());
     }
 
     fn push_u16(&mut self, val: u16) {
-        push_with(self, |ctx| val.into_js(ctx).unwrap());
+        self.push_with(|ctx| val.into_js(ctx).unwrap());
     }
 
     fn push_s16(&mut self, val: i16) {
-        push_with(self, |ctx| val.into_js(ctx).unwrap());
+        self.push_with(|ctx| val.into_js(ctx).unwrap());
     }
 
     fn push_u32(&mut self, val: u32) {
-        push_with(self, |ctx| val.into_js(ctx).unwrap());
+        self.push_with(|ctx| val.into_js(ctx).unwrap());
     }
 
     fn push_s32(&mut self, val: i32) {
-        push_with(self, |ctx| val.into_js(ctx).unwrap());
+        self.push_with(|ctx| val.into_js(ctx).unwrap());
     }
 
     fn push_u64(&mut self, val: u64) {
-        push_with(self, |ctx| {
-            BigInt::from_u64(ctx.clone(), val).unwrap().into_value()
-        });
+        self.push_with(|ctx| BigInt::from_u64(ctx.clone(), val).unwrap().into_value());
     }
 
     fn push_s64(&mut self, val: i64) {
-        push_with(self, |ctx| {
-            BigInt::from_i64(ctx.clone(), val).unwrap().into_value()
-        });
+        self.push_with(|ctx| BigInt::from_i64(ctx.clone(), val).unwrap().into_value());
     }
 
     fn push_f32(&mut self, val: f32) {
-        push_with(self, |ctx| val.into_js(ctx).unwrap());
+        self.push_with(|ctx| val.into_js(ctx).unwrap());
     }
 
     fn push_f64(&mut self, val: f64) {
-        push_with(self, |ctx| val.into_js(ctx).unwrap());
+        self.push_with(|ctx| val.into_js(ctx).unwrap());
     }
 
     fn push_char(&mut self, val: char) {
-        push_with(self, |ctx| val.into_js(ctx).unwrap());
+        self.push_with(|ctx| val.into_js(ctx).unwrap());
     }
 
     fn push_string(&mut self, val: String) {
-        push_with(self, |ctx| val.into_js(ctx).unwrap());
+        self.push_with(|ctx| val.into_js(ctx).unwrap());
     }
 
     unsafe fn push_raw_list(&mut self, ty: List, ptr: *mut u8, len: usize) -> bool {
@@ -542,9 +650,7 @@ impl Call for QjsCallContext {
     }
 
     fn push_list(&mut self, _ty: List, _capacity: usize) {
-        push_with(self, |ctx| {
-            rquickjs::Array::new(ctx.clone()).unwrap().into_value()
-        });
+        self.push_with(|ctx| rquickjs::Array::new(ctx.clone()).unwrap().into_value());
     }
 
     fn list_append(&mut self, _ty: List) {
@@ -601,7 +707,7 @@ impl Call for QjsCallContext {
             });
         } else if !is_some {
             // Bare option: `none` is null; `some(v)` leaves `v` on the stack.
-            push_with(self, |ctx| Value::new_null(ctx.clone()));
+            self.push_with(|ctx| Value::new_null(ctx.clone()));
         }
     }
 
@@ -648,12 +754,13 @@ impl Call for QjsCallContext {
             .names()
             .nth(val as usize)
             .expect("enum index out of range");
-        push_with(self, move |ctx| name.into_js(ctx).unwrap());
+        self.push_with(move |ctx| name.into_js(ctx).unwrap());
     }
 
     fn push_flags(&mut self, ty: Flags, val: u32) {
         with_ctx(|ctx| {
             let obj = rquickjs::Object::new(ctx.clone()).unwrap();
+
             for (i, name) in ty.names().enumerate() {
                 obj.set(fn_lookup(ctx, name), (val & (1 << i)) != 0)
                     .unwrap();
@@ -719,6 +826,7 @@ impl Call for QjsCallContext {
 
         with_ctx(|ctx| {
             let obj = rquickjs::Object::new(ctx.clone()).unwrap();
+
             for ((name, _), val) in fields.iter().zip(vals.into_iter().rev()) {
                 obj.set(fn_lookup(ctx, name), val.restore(ctx).unwrap())
                     .unwrap();

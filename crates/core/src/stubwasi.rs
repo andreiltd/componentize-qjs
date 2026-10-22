@@ -90,6 +90,7 @@ fn make_stub_component(
         &stub_resolve,
         stub_world_id,
         StringEncoding::UTF8,
+        false,
     )
     .context("failed to embed component metadata in stub module")?;
 
