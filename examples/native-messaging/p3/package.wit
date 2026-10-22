@@ -1,0 +1,8 @@
+package native-messaging:native-messaging-componentize-qjs-p3;
+ 
+world native-messaging-componentize-qjs-p3 {
+    import wasi:cli/stdin@0.3.0;
+    import wasi:cli/stdout@0.3.0;
+
+    export wasi:cli/run@0.3.0;
+}
