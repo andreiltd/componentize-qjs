@@ -336,7 +336,7 @@ mod tests {
         for (input, message) in [
             (
                 r#"(component (core module $m) (export "init" (core module $m)))"#,
-                "invalid component init export",
+                "component init export must be a function",
             ),
             (
                 r#"(component
@@ -346,7 +346,7 @@ mod tests {
                     (func $init (canon lift (core func $init)))
                     (export "init" (func $init))
                     (export "init" (func $init)))"#,
-                "invalid component init export",
+                "duplicate component init export",
             ),
             (
                 r#"(component

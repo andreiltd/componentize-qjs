@@ -363,16 +363,16 @@ dependencies = [
  "ureq",
  "walrus",
  "wasi-preview1-component-adapter-provider",
- "wasm-compose 0.258.0",
- "wasm-encoder 0.258.0",
- "wasmparser 0.258.0",
+ "wasm-compose 0.262.0",
+ "wasm-encoder 0.262.0",
+ "wasmparser 0.262.0",
  "wasmtime",
  "wasmtime-wasi",
  "wasmtime-wizer",
  "wat",
- "wit-component 0.258.0",
+ "wit-component 0.262.0",
  "wit-dylib",
- "wit-parser 0.258.0",
+ "wit-parser 0.262.0",
 ]
 
 [[package]]
@@ -394,7 +394,7 @@ dependencies = [
  "tokio",
  "wasmtime",
  "wasmtime-wasi",
- "wit-parser 0.258.0",
+ "wit-parser 0.262.0",
 ]
 
 [[package]]
@@ -3277,23 +3277,6 @@ dependencies = [
 
 [[package]]
 name = "wasm-compose"
-version = "0.258.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7dd08e5283f98238f2f16f5f978188a33af9901b81186bb549faad306a7b5388"
-dependencies = [
- "anyhow",
- "heck",
- "indexmap",
- "log",
- "petgraph",
- "smallvec",
- "wasm-encoder 0.258.0",
- "wasmparser 0.258.0",
- "wat",
-]
-
-[[package]]
-name = "wasm-compose"
 version = "0.261.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df7deb87d659b1df555d3195e3df56d1f03b73d165c5a1bc3a0bad24274ea147"
@@ -3305,6 +3288,22 @@ dependencies = [
  "smallvec",
  "wasm-encoder 0.261.0",
  "wasmparser 0.261.0",
+ "wat",
+]
+
+[[package]]
+name = "wasm-compose"
+version = "0.262.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "310f2ca84cded739b16ecf9c57631e55b8f99e23da03680e8c42a30a12fb583a"
+dependencies = [
+ "anyhow",
+ "indexmap",
+ "log",
+ "petgraph",
+ "smallvec",
+ "wasm-encoder 0.262.0",
+ "wasmparser 0.262.0",
  "wat",
 ]
 
@@ -3373,6 +3372,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasm-metadata"
+version = "0.262.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c86ff6668190d9fb70372b306b4f9fe8930f0e2f57ce72e4922bf2f117900949"
+dependencies = [
+ "anyhow",
+ "indexmap",
+ "wasm-encoder 0.262.0",
+ "wasmparser 0.262.0",
+]
+
+[[package]]
 name = "wasm-wave"
 version = "0.261.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3407,7 +3418,6 @@ dependencies = [
  "hashbrown 0.17.1",
  "indexmap",
  "semver",
- "serde",
 ]
 
 [[package]]
@@ -3430,8 +3440,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "974d643b125b272607e2fff8012ea14a8328acd7621e4bafa7afb32500052b1b"
 dependencies = [
  "bitflags",
+ "hashbrown 0.17.1",
  "indexmap",
  "semver",
+ "serde",
 ]
 
 [[package]]
@@ -4068,7 +4080,6 @@ dependencies = [
  "wasm-encoder 0.258.0",
  "wasm-metadata 0.258.0",
  "wasmparser 0.258.0",
- "wat",
  "wit-parser 0.258.0",
 ]
 
@@ -4092,15 +4103,35 @@ dependencies = [
 ]
 
 [[package]]
-name = "wit-dylib"
-version = "0.258.0"
+name = "wit-component"
+version = "0.262.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2d327c800c0fbf8c59c792711d7b945689b5252dcd39a538dea3176905be15d"
+checksum = "078def49fdb49cab405c3006e05793b3fdaf7069126ba6b9c97d01ec8c98fe4c"
+dependencies = [
+ "anyhow",
+ "bitflags",
+ "indexmap",
+ "log",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "wasm-encoder 0.262.0",
+ "wasm-metadata 0.262.0",
+ "wasmparser 0.262.0",
+ "wat",
+ "wit-parser 0.262.0",
+]
+
+[[package]]
+name = "wit-dylib"
+version = "0.262.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4afb62bd2b1a374611ff4125cf51a36d1a35cf36d2bbfd0e9ac32573bbb199cb"
 dependencies = [
  "anyhow",
  "indexmap",
- "wasm-encoder 0.258.0",
- "wit-parser 0.258.0",
+ "wasm-encoder 0.262.0",
+ "wit-parser 0.262.0",
 ]
 
 [[package]]
@@ -4144,6 +4175,25 @@ dependencies = [
  "serde_json",
  "unicode-ident",
  "wasmparser 0.261.0",
+]
+
+[[package]]
+name = "wit-parser"
+version = "0.262.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00f0dc051466ffe46787721fca3d088536f158ae400be044f1b1c386ba9397ad"
+dependencies = [
+ "anyhow",
+ "hashbrown 0.17.1",
+ "id-arena",
+ "indexmap",
+ "log",
+ "semver",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "unicode-ident",
+ "wasmparser 0.262.0",
 ]
 
 [[package]]

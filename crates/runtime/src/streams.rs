@@ -590,8 +590,7 @@ fn stream_write_impl<'js>(
 
         for i in 0..count {
             let elem: Value = arr.get(i)?;
-            call.transfer_group = i;
-            call.push_value(&ctx, elem);
+            call.push_stream_element(&ctx, elem, i);
             unsafe { ty.lower(&mut call, buf.ptr().add(ty.abi_payload_size() * i)) };
         }
         (buf, count)

@@ -14,11 +14,12 @@ use crate::DetHashMap;
 use crate::abi::*;
 use crate::buffer::BufferGuard;
 use crate::futures::{self, FutureReadable, FutureWritable};
+use crate::imports::{self, ImportCall};
 use crate::module::execute_pending_job;
 use crate::resources::drain_resource_drops;
 use crate::result::ResultBoundary;
 use crate::streams::{self, StreamReadable, StreamWritable};
-use crate::{QjsCallContext, reject_promise, with_ctx};
+use crate::{QjsCallContext, with_ctx};
 
 /// A pending async operation awaiting a callback event.
 ///
@@ -29,8 +30,8 @@ use crate::{QjsCallContext, reject_promise, with_ctx};
 pub(crate) enum Pending {
     /// An async import call that hasn't returned yet.
     ImportCall {
-        call: QjsCallContext,
-        func_index: usize,
+        call: ImportCall,
+        /// Result storage retained by the call's conversion context.
         buffer: *mut u8,
         resolve: Persistent<Function<'static>>,
         reject: Persistent<Function<'static>>,
@@ -97,16 +98,7 @@ impl Pending {
 impl CancelRequest {
     fn cancel(self, ctx: &Ctx<'_>, handle: u32) -> rquickjs::Result<()> {
         match self {
-            Self::Import => {
-                ctx.task().unjoin(handle);
-                let code = unsafe { subtask_cancel(handle) };
-                if is_blocked_raw(code) {
-                    ctx.task().rejoin(handle);
-                } else {
-                    let state = SubtaskState::try_from(code).expect("invalid cancellation state");
-                    handle_subtask(handle, state);
-                }
-            }
+            Self::Import => imports::cancel_subtask(ctx, handle),
             Self::StreamRead(wrapper) => {
                 let value = wrapper.restore(ctx)?;
                 let class = Class::<StreamReadable>::from_value(&value)?;
@@ -413,6 +405,20 @@ impl TaskState {
         self.with(|inner| inner.take(handle))
     }
 
+    /// Update a pending operation that remains joined to the waitable set.
+    ///
+    /// `f` runs while the task state is borrowed, so it must not re-enter the task.
+    pub(crate) fn with_pending<R>(&self, handle: u32, f: impl FnOnce(&mut Pending) -> R) -> R {
+        self.with(|inner| {
+            let entry = inner
+                .pending
+                .get_mut(&handle)
+                .expect("no pending entry for handle");
+
+            f(&mut entry.op)
+        })
+    }
+
     pub(crate) fn unjoin(&self, handle: u32) {
         self.with(|inner| inner.unjoin(handle));
     }
@@ -521,7 +527,7 @@ impl TaskState {
 pub(crate) fn handle_event(event: Event) {
     match event {
         Event::None => {}
-        Event::Subtask { handle, state } => handle_subtask(handle, state),
+        Event::Subtask { handle, state } => imports::handle_subtask(handle, state),
         Event::StreamWrite { handle, result } => streams::handle_write_event(handle, result),
         Event::StreamRead { handle, result } => {
             if !with_ctx(|ctx| ctx.task().handle_wakeup(handle)) {
@@ -536,78 +542,5 @@ pub(crate) fn handle_event(event: Event) {
                 .catch(ctx)
                 .expect("Failed to cancel async task");
         }),
-    }
-}
-
-/// Reconcile a host subtask event with its pending JavaScript import promise.
-///
-/// Returned subtasks lift their canonical result before settling the promise;
-/// cancellation drops the subtask and rejects its promise.
-pub(crate) fn handle_subtask(handle: u32, state: SubtaskState) {
-    match state {
-        SubtaskState::Starting => unreachable!("Starting should not reach callback"),
-        SubtaskState::Started => with_ctx(|ctx| {
-            ctx.task().with(|inner| {
-                let entry = inner.pending.get_mut(&handle).expect("no pending import");
-                let Pending::ImportCall { call, .. } = &mut entry.op else {
-                    unreachable!("expected ImportCall pending for started subtask");
-                };
-                call.complete_transfers(1);
-            });
-        }),
-        SubtaskState::Returned => {
-            let pending = with_ctx(|ctx| ctx.task().take(handle));
-            unsafe { subtask_drop(handle) };
-
-            let Pending::ImportCall {
-                func_index,
-                buffer,
-                resolve,
-                reject,
-                mut call,
-                ..
-            } = pending
-            else {
-                unreachable!("expected ImportCall pending");
-            };
-            call.complete_transfers(1);
-
-            let func = with_ctx(|ctx| ctx.wit()).import_func(func_index);
-            unsafe { func.lift_import_async_result(&mut call, buffer) };
-
-            with_ctx(|ctx| {
-                ResultBoundary::new(func.result())
-                    .lift(ctx, call.maybe_pop_value(ctx).unwrap())
-                    .unwrap()
-                    .settle_persistent(ctx, resolve, reject);
-            });
-        }
-        SubtaskState::CancelledBeforeStarted | SubtaskState::CancelledBeforeReturned => {
-            let pending = with_ctx(|ctx| ctx.task().take(handle));
-            let Pending::ImportCall {
-                reject, mut call, ..
-            } = pending
-            else {
-                unreachable!("expected ImportCall pending for cancelled subtask");
-            };
-
-            unsafe { subtask_drop(handle) };
-
-            if state == SubtaskState::CancelledBeforeReturned {
-                call.complete_transfers(1);
-            }
-
-            drop(call);
-
-            let reason = with_ctx(|ctx| {
-                let error =
-                    rquickjs::Exception::from_message(ctx.clone(), "async import cancelled")
-                        .catch(ctx)
-                        .expect("Failed to create cancellation error");
-                Persistent::save(ctx, error.into_value())
-            });
-
-            reject_promise(reject, reason);
-        }
     }
 }
