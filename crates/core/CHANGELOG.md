@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/andreiltd/componentize-qjs/compare/componentize-qjs-v0.4.5...componentize-qjs-v0.5.0) - 2026-10-22
+
+### Bug Fixes
+
+- support async import cancellation and larger snapshots ([#91](https://github.com/andreiltd/componentize-qjs/pull/91))
+- rerun build only if prebuilts actually changed ([#93](https://github.com/andreiltd/componentize-qjs/pull/93))
+- [**breaking**] `u64` and `s64` narrowing ([#87](https://github.com/andreiltd/componentize-qjs/pull/87))
+
+### Miscellaneous
+
+- bump wasmitme to v50.0.0 ([#94](https://github.com/andreiltd/componentize-qjs/pull/94))
+
+### Performance
+
+- reduce generated component size ([#92](https://github.com/andreiltd/componentize-qjs/pull/92))
+
+### Refactoring
+
+- *(runtime)* move call and resource lifecycle to their own modules ([#100](https://github.com/andreiltd/componentize-qjs/pull/100))
+- simplify runtime internals and artifact builds ([#85](https://github.com/andreiltd/componentize-qjs/pull/85))
+
 ## [0.4.5](https://github.com/andreiltd/componentize-qjs/compare/componentize-qjs-v0.4.4...componentize-qjs-v0.4.5) - 2026-09-16
 
 ### Bug Fixes
