@@ -462,6 +462,7 @@ async fn test_async_exported_resource_members() {
                     add: async func(value: u32) -> u32;
                     get-value: func() -> u32;
                     create: static async func(initial: u32) -> counter;
+                    round-trip: static async func(value: counter) -> counter;
                     try-fail: async func() -> result<u32, string>;
                 }
             }
@@ -491,6 +492,11 @@ async fn test_async_exported_resource_members() {
                 static async create(initial) {
                     await Promise.resolve();
                     return new this(initial);
+                }
+
+                static async roundTrip(value) {
+                    await Promise.resolve();
+                    return value;
                 }
 
                 async tryFail() {
@@ -588,6 +594,29 @@ async fn test_async_exported_resource_members() {
         results[0],
         Val::Result(Err(Some(Box::new(Val::String("expected failure".into())))))
     );
+
+    let round_trip_idx = component
+        .get_export_index(&mut *store, Some(&iface_idx), "[static]counter.round-trip")
+        .expect("[static]counter.round-trip not found");
+    let round_trip = component.get_func(&mut *store, round_trip_idx).unwrap();
+    let mut results = [Val::Bool(false)];
+
+    round_trip
+        .call_async(&mut *store, &[counter], &mut results)
+        .await
+        .unwrap();
+    let returned = results[0].clone();
+
+    get_value
+        .call_async(&mut *store, std::slice::from_ref(&returned), &mut results)
+        .await
+        .unwrap();
+    assert_eq!(results[0], Val::U32(42));
+
+    let Val::Resource(returned) = returned else {
+        panic!("expected returned resource");
+    };
+    returned.resource_drop_async(&mut *store).await.unwrap();
 }
 
 #[tokio::test]
