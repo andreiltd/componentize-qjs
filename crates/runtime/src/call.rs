@@ -787,12 +787,17 @@ impl Call for QjsCallContext {
 
     fn push_own(&mut self, ty: Resource, handle: u32) {
         with_ctx(|ctx| {
-            let val = if ty.rep().is_some() {
-                let persistent = ctx.resources().remove(handle as usize);
+            let val = if let Some(rep_fn) = ty.rep() {
+                let rep = unsafe { rep_fn(handle) };
+                let persistent = ctx.resources().get(rep);
                 let val = persistent.restore(ctx).unwrap();
+
                 if let Some(obj) = val.as_object() {
                     let _ = obj.remove("__cqjs_handle");
                 }
+
+                // The destructor removes the table root; `val` retains the JS object.
+                unsafe { ty.drop()(handle) };
                 val
             } else {
                 make_imported_owned(ctx, ty, handle)

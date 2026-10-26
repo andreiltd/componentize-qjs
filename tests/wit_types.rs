@@ -1618,6 +1618,118 @@ fn test_exported_resource() {
     assert_eq!(results[0], Val::U32(48));
 }
 
+/// Preserve exported JS resource objects through repeated and nested ownership transfers.
+#[test]
+fn test_exported_resource_owned_parameters() {
+    let mut instance = TestCase::new()
+        .wit(
+            r#"
+            package test:owned-resource;
+
+            interface api {
+                resource state {
+                    constructor(value: u32);
+                    get-value: func() -> u32;
+                }
+
+                mk: func() -> state;
+                consume: func(s: state) -> state;
+                consume-many: func(states: list<state>) -> list<state>;
+                consume-value: func(s: state) -> u32;
+            }
+
+            world owned-resource {
+                export api;
+            }
+            "#,
+        )
+        .script(
+            r#"
+            class State {
+                constructor(value) {
+                    this.value = value;
+                }
+
+                getValue() {
+                    return this.value;
+                }
+            }
+
+            export const api = {
+                State,
+                mk() { return new State(7); },
+                consume(s) { return s; },
+                consumeMany(states) { return states; },
+                consumeValue(s) { return s.value; },
+            };
+            "#,
+        )
+        .stub_wasi()
+        .build()
+        .unwrap();
+
+    let (component, store) = instance.parts();
+    let interface = component
+        .get_export_index(&mut *store, None, "test:owned-resource/api")
+        .unwrap();
+    let mut export = |name: &str| {
+        let index = component
+            .get_export_index(&mut *store, Some(&interface), name)
+            .unwrap();
+        component.get_func(&mut *store, index).unwrap()
+    };
+    let mk = export("mk");
+    let constructor = export("[constructor]state");
+    let consume = export("consume");
+    let consume_many = export("consume-many");
+    let consume_value = export("consume-value");
+    let get_value = export("[method]state.get-value");
+    let mut results = [Val::Bool(false)];
+
+    mk.call(&mut *store, &[], &mut results).unwrap();
+    let mut state = results[0].clone();
+
+    for _ in 0..3 {
+        consume.call(&mut *store, &[state], &mut results).unwrap();
+        state = results[0].clone();
+
+        get_value
+            .call(&mut *store, std::slice::from_ref(&state), &mut results)
+            .unwrap();
+        assert_eq!(results[0], Val::U32(7));
+    }
+
+    constructor
+        .call(&mut *store, &[Val::U32(42)], &mut results)
+        .unwrap();
+    let states = Val::List(vec![state, results[0].clone()]);
+
+    consume_many
+        .call(&mut *store, &[states], &mut results)
+        .unwrap();
+
+    let Val::List(mut states) = results[0].clone() else {
+        panic!("expected returned resource list");
+    };
+    let second = states.pop().unwrap();
+    let first = states.pop().unwrap();
+
+    consume_value
+        .call(&mut *store, &[first], &mut results)
+        .unwrap();
+    assert_eq!(results[0], Val::U32(7));
+
+    get_value
+        .call(&mut *store, std::slice::from_ref(&second), &mut results)
+        .unwrap();
+    assert_eq!(results[0], Val::U32(42));
+
+    let Val::Resource(second) = second else {
+        panic!("expected returned resource");
+    };
+    second.resource_drop(&mut *store).unwrap();
+}
+
 #[test]
 fn test_static_resource_method_in_interface() {
     let dir = tempfile::TempDir::new().unwrap();
