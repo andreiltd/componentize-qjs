@@ -40,7 +40,7 @@ tokio.workspace = true
 wit-parser.workspace = true
 wit-component = { version = "0.262", features = ["dummy-module"] }
 wit-dylib = "0.262"
-wasi-preview1-component-adapter-provider = "49"
+wasi-preview1-component-adapter-provider = "50"
 wasmtime.workspace = true
 wasmtime-wasi.workspace = true
 wasmtime-wizer = { version = "50", features = ["component-model", "wasmtime"] }
