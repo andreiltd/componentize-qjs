@@ -42,6 +42,26 @@ export function maybeDouble(n) {
     return n * 2;
 }
 
+// Spells out how an option arrived, so `null` and `undefined` don't blur and
+// each `{ tag, val }` wrapper shows.
+function describeValue(v) {
+    if (v === undefined) return "undefined";
+    if (v === null) return "null";
+    if (typeof v === "object") {
+        return v.tag === "some" ? "{some: " + describeValue(v.val) + "}" : "{" + v.tag + "}";
+    }
+    return String(v);
+}
+
+export function describeOption(n) { return describeValue(n); }
+export function describeOptionField(l) { return describeValue(l.maxRetries); }
+export function describeNestedOption(n) { return describeValue(n); }
+export function describeTripleOption(n) { return describeValue(n); }
+
+// jco's none, some(none), some(some(none)) and some(some(some(7))).
+const TRIPLE_OPTIONS = [undefined, { tag: "none" }, { tag: "some", val: undefined }, { tag: "some", val: 7 }];
+export function makeTripleOption(kind) { return TRIPLE_OPTIONS[kind]; }
+
 export function safeDiv(a, b) {
     if (b === 0) { throw "division by zero"; }
     return Math.floor(a / b);

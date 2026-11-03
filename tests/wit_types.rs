@@ -205,6 +205,73 @@ fn test_option_type() {
 }
 
 #[test]
+fn test_option_none_is_undefined() {
+    // A `none` lifts as `undefined`, as jco's bindings do, so a guest typed by
+    // `jco guest-types` (`T | undefined`, `field?: T`) gets the value it declares.
+    let none = || Val::Option(None);
+    let some = |val: Val| Val::Option(Some(Box::new(val)));
+    let text = |s: &str| Val::String(s.into());
+
+    component()
+        .expect_call("describe-option", vec![none()], text("undefined"))
+        .expect_call("describe-option", vec![some(Val::U32(7))], text("7"))
+        .expect_call(
+            "describe-option-field",
+            vec![Val::Record(vec![("max-retries".into(), none())])],
+            text("undefined"),
+        )
+        .expect_call("describe-nested-option", vec![none()], text("{none}"))
+        .expect_call(
+            "describe-nested-option",
+            vec![some(none())],
+            text("{some: undefined}"),
+        )
+        .run();
+}
+
+#[test]
+fn test_triple_option_lifts_as_jco() {
+    // jco wraps an option only when its payload is a bare option, so
+    // option<option<option<T>>> is bare outside, wrapped in the middle, and
+    // bare inside.
+    let none = || Val::Option(None);
+    let some = |val: Val| Val::Option(Some(Box::new(val)));
+    let text = |s: &str| Val::String(s.into());
+
+    component()
+        .expect_call("describe-triple-option", vec![none()], text("undefined"))
+        .expect_call("describe-triple-option", vec![some(none())], text("{none}"))
+        .expect_call(
+            "describe-triple-option",
+            vec![some(some(none()))],
+            text("{some: undefined}"),
+        )
+        .expect_call(
+            "describe-triple-option",
+            vec![some(some(some(Val::U32(7))))],
+            text("{some: 7}"),
+        )
+        .run();
+}
+
+#[test]
+fn test_triple_option_lowers_as_jco() {
+    let none = || Val::Option(None);
+    let some = |val: Val| Val::Option(Some(Box::new(val)));
+
+    component()
+        .expect_call("make-triple-option", vec![Val::U32(0)], none())
+        .expect_call("make-triple-option", vec![Val::U32(1)], some(none()))
+        .expect_call("make-triple-option", vec![Val::U32(2)], some(some(none())))
+        .expect_call(
+            "make-triple-option",
+            vec![Val::U32(3)],
+            some(some(some(Val::U32(7)))),
+        )
+        .run();
+}
+
+#[test]
 fn test_result_type() {
     component()
         .expect_call(

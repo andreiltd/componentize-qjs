@@ -361,6 +361,8 @@ objects with a string `tag`:
 ```
 
 `enum` values are case-name strings (`"variant-a"`), `flags` are
-`{ camelCaseName: boolean }` objects, and `option<T>` is `T | null` — except a
-nested `option<option<T>>`, which is wrapped as `{ tag: "some", val } |
-{ tag: "none" }` so that `none` and `some(none)` stay distinct.
+`{ camelCaseName: boolean }` objects, and `option<T>` is `T | undefined` —
+except when `T` is itself a bare option, as in `option<option<T>>`: then it is
+wrapped as `{ tag: "some", val } | { tag: "none" }` so that `none` and
+`some(none)` stay distinct. A wrapped option is not bare, so
+`option<option<option<T>>>` is bare again, as in jco.

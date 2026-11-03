@@ -20,6 +20,12 @@ world wasi-environment {
     export get-env-vars: func() -> list<tuple<string, string>>;
 }
 
+world wasi-initial-cwd {
+    import wasi:cli/environment@0.2.12;
+
+    export describe-initial-cwd: func() -> string;
+}
+
 world wasi-stdio {
     import wasi:cli/stdin@0.2.12;
     import wasi:cli/stdout@0.2.12;
