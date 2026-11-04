@@ -148,6 +148,34 @@ fn test_wasi_environment() {
 }
 
 #[test]
+fn test_wasi_import_option_none_is_undefined() {
+    // The host sets no initial cwd, so `initial-cwd` returns `none`.
+    TestCase::new()
+        .wit_dir(wasi_wit_dir())
+        .world("wasi-initial-cwd")
+        .script(
+            r#"
+            import env from "wasi:cli/environment@0.2.12";
+
+            export function describeInitialCwd() {
+                const cwd = env.initialCwd();
+                if (cwd === undefined) return "undefined";
+                if (cwd === null) return "null";
+                return cwd;
+            }
+        "#,
+        )
+        .expect_call(
+            "describe-initial-cwd",
+            vec![],
+            Val::String("undefined".into()),
+        )
+        .build()
+        .expect("should build wasi-initial-cwd component")
+        .run();
+}
+
+#[test]
 fn test_wasi_stdio() {
     let mut inst = TestCase::new()
         .wit_dir(wasi_wit_dir())

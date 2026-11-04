@@ -3,6 +3,7 @@ package test:all;
 world all {
     record point { x: f64, y: f64 }
     record person { name: string, age: u32, active: bool }
+    record limits { max-retries: option<u32> }
     enum color { red, green, blue }
     variant shape { circle(f64), none }
     flags permissions { read, write, execute }
@@ -28,6 +29,11 @@ world all {
     export bytes: func() -> list<u8>;
     export empty: func() -> list<u8>;
     export maybe-double: func(n: option<u32>) -> option<u32>;
+    export describe-option: func(n: option<u32>) -> string;
+    export describe-option-field: func(l: limits) -> string;
+    export describe-nested-option: func(n: option<option<u32>>) -> string;
+    export describe-triple-option: func(n: option<option<option<u32>>>) -> string;
+    export make-triple-option: func(kind: u32) -> option<option<option<u32>>>;
     export safe-div: func(a: u32, b: u32) -> result<u32, string>;
     export take-string: func(s: string) -> u32;
     export return-string: func() -> string;

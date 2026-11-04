@@ -150,13 +150,16 @@ impl Drop for QjsCallContext {
     }
 }
 
-/// Whether an option's payload is itself an option (after resolving aliases).
+/// Whether an option is wrapped as `{ tag, val }` rather than bare, as in jco:
+/// it is wrapped when its payload (after resolving aliases) is a bare option,
+/// since `undefined` would then mean both `none` and `some(none)`. So
+/// `option<option<T>>` is wrapped and `option<option<option<T>>>` is bare.
 fn option_is_nested(ty: WitOption) -> bool {
     let mut inner = ty.ty();
 
     loop {
         match inner {
-            Type::Option(_) => return true,
+            Type::Option(payload) => return !option_is_nested(payload),
             Type::Alias(alias) => inner = alias.ty(),
             _ => return false,
         }
@@ -706,8 +709,9 @@ impl Call for QjsCallContext {
                 self.stack.push(Persistent::save(ctx, obj.into_value()));
             });
         } else if !is_some {
-            // Bare option: `none` is null; `some(v)` leaves `v` on the stack.
-            self.push_with(|ctx| Value::new_null(ctx.clone()));
+            // Bare option: `none` is undefined, as in jco; `some(v)` leaves
+            // `v` on the stack.
+            self.push_with(|ctx| Value::new_undefined(ctx.clone()));
         }
     }
 
