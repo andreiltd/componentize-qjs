@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/andreiltd/componentize-qjs/compare/v0.5.0...v0.6.0) - 2026-11-04
+
+### Bug Fixes
+
+- [**breaking**] lift options as jco does ([#109](https://github.com/andreiltd/componentize-qjs/pull/109))
+- *(deps)* update rust crate wasi-preview1-component-adapter-provider to v50 ([#108](https://github.com/andreiltd/componentize-qjs/pull/108))
+- use correct handle for resources ([#105](https://github.com/andreiltd/componentize-qjs/pull/105))
+
 ## [0.5.0](https://github.com/andreiltd/componentize-qjs/compare/v0.4.5...v0.5.0) - 2026-10-22
 
 ### Bug Fixes
