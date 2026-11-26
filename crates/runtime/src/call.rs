@@ -192,7 +192,8 @@ impl Call for QjsCallContext {
     }
 
     fn pop_u32(&mut self) -> u32 {
-        self.pop_with(|v| v.get::<i32>().expect("expected number") as u32)
+        // i32 would saturate a number from 2^31 up, which QuickJS keeps as a float64.
+        self.pop_with(|v| v.get::<i64>().expect("expected number") as u32)
     }
 
     fn pop_s32(&mut self) -> i32 {
@@ -599,7 +600,8 @@ impl Call for QjsCallContext {
     }
 
     fn push_u32(&mut self, val: u32) {
-        self.push_with(|ctx| val.into_js(ctx).unwrap());
+        // rquickjs's own conversion turns a u32 from 2^31 up into a negative s32.
+        self.push_with(|ctx| Value::new_number(ctx.clone(), val.into()));
     }
 
     fn push_s32(&mut self, val: i32) {
