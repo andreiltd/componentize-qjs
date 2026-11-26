@@ -192,7 +192,11 @@ impl Call for QjsCallContext {
     }
 
     fn pop_u32(&mut self) -> u32 {
-        self.pop_with(|v| v.get::<i32>().expect("expected number") as u32)
+        // Coerced<i32> is ToInt32, so this matches `x >>> 0`; get::<i32> saturates from 2^31 up.
+        self.pop_with(|v| {
+            assert!(v.is_number(), "expected number");
+            v.get::<Coerced<i32>>().expect("expected number").0 as u32
+        })
     }
 
     fn pop_s32(&mut self) -> i32 {
@@ -599,7 +603,8 @@ impl Call for QjsCallContext {
     }
 
     fn push_u32(&mut self, val: u32) {
-        self.push_with(|ctx| val.into_js(ctx).unwrap());
+        // rquickjs's own conversion turns a u32 from 2^31 up into a negative s32.
+        self.push_with(|ctx| Value::new_number(ctx.clone(), val.into()));
     }
 
     fn push_s32(&mut self, val: i32) {

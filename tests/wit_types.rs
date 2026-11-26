@@ -346,6 +346,121 @@ fn test_all_integer_types() {
 }
 
 #[test]
+fn test_integer_bounds() {
+    component()
+        .expect_call("add-s8", vec![Val::S8(-127), Val::S8(-1)], Val::S8(i8::MIN))
+        .expect_call("add-s8", vec![Val::S8(126), Val::S8(1)], Val::S8(i8::MAX))
+        .expect_call(
+            "add-s16",
+            vec![Val::S16(-32767), Val::S16(-1)],
+            Val::S16(i16::MIN),
+        )
+        .expect_call(
+            "add-s16",
+            vec![Val::S16(32766), Val::S16(1)],
+            Val::S16(i16::MAX),
+        )
+        .expect_call(
+            "add-u32",
+            vec![Val::U32(1 << 31), Val::U32(0)],
+            Val::U32(1 << 31),
+        )
+        .expect_call(
+            "add-u32",
+            vec![Val::U32(u32::MAX - 1), Val::U32(1)],
+            Val::U32(u32::MAX),
+        )
+        .expect_call(
+            "add-s32",
+            vec![Val::S32(i32::MIN + 1), Val::S32(-1)],
+            Val::S32(i32::MIN),
+        )
+        .expect_call(
+            "add-s32",
+            vec![Val::S32(i32::MAX - 1), Val::S32(1)],
+            Val::S32(i32::MAX),
+        )
+        .expect_call(
+            "add-u64",
+            vec![Val::U64(u64::MAX - 1), Val::U64(1)],
+            Val::U64(u64::MAX),
+        )
+        .expect_call(
+            "add-s64",
+            vec![Val::S64(i64::MIN + 1), Val::S64(-1)],
+            Val::S64(i64::MIN),
+        )
+        .expect_call(
+            "add-s64",
+            vec![Val::S64(i64::MAX - 1), Val::S64(1)],
+            Val::S64(i64::MAX),
+        )
+        .run();
+}
+
+#[test]
+fn test_u32_lifts_above_i32_max() {
+    // JS gets a u32 from 2^31 up as the number it is, not as its s32 bits.
+    let some = |val: Val| Val::Option(Some(Box::new(val)));
+    let text = |s: &str| Val::String(s.into());
+
+    component()
+        .expect_call(
+            "describe-option",
+            vec![some(Val::U32(3_000_000_000))],
+            text("3000000000"),
+        )
+        .expect_call(
+            "describe-option",
+            vec![some(Val::U32(u32::MAX))],
+            text("4294967295"),
+        )
+        .expect_call(
+            "safe-div",
+            vec![Val::U32(3_000_000_000), Val::U32(2)],
+            Val::Result(Ok(Some(Box::new(Val::U32(1_500_000_000))))),
+        )
+        .run();
+}
+
+#[test]
+fn test_u32_lowers_above_i32_max() {
+    // QuickJS keeps a number from 2^31 up as a float64, not an int.
+    let some = |val: Val| Val::Option(Some(Box::new(val)));
+
+    component()
+        .expect_call(
+            "maybe-double",
+            vec![some(Val::U32(2_000_000_000))],
+            some(Val::U32(4_000_000_000)),
+        )
+        .expect_call(
+            "sum-list",
+            vec![Val::List(vec![
+                Val::U32(2_000_000_000),
+                Val::U32(2_000_000_000),
+            ])],
+            Val::U32(4_000_000_000),
+        )
+        .run();
+}
+
+#[test]
+fn test_u32_lowers_like_unsigned_shift() {
+    // Any number lowers as `x >>> 0` would: NaN and the infinities as 0, the rest mod 2^32.
+    let arg = |x: f64| vec![Val::Float64(x)];
+
+    component()
+        .expect_call("f64-to-u32", arg(f64::NAN), Val::U32(0))
+        .expect_call("f64-to-u32", arg(f64::INFINITY), Val::U32(0))
+        .expect_call("f64-to-u32", arg(f64::NEG_INFINITY), Val::U32(0))
+        .expect_call("f64-to-u32", arg(-1.0), Val::U32(u32::MAX))
+        .expect_call("f64-to-u32", arg(2f64.powi(32) + 5.0), Val::U32(5))
+        .expect_call("f64-to-u32", arg(1e20), Val::U32(1_661_992_960))
+        .run();
+}
+
+#[test]
 fn test_float_types() {
     component()
         .expect_call(
@@ -357,6 +472,47 @@ fn test_float_types() {
             "add-f64",
             vec![Val::Float64(1.5), Val::Float64(2.5)],
             Val::Float64(4.0),
+        )
+        .run();
+}
+
+#[test]
+fn test_float_bounds() {
+    component()
+        .expect_call(
+            "add-f32",
+            vec![Val::Float32(f32::MAX), Val::Float32(f32::MAX)],
+            Val::Float32(f32::INFINITY),
+        )
+        .expect_call(
+            "add-f32",
+            vec![Val::Float32(-0.0), Val::Float32(-0.0)],
+            Val::Float32(-0.0),
+        )
+        .expect_call(
+            "add-f32",
+            vec![Val::Float32(f32::NAN), Val::Float32(1.0)],
+            Val::Float32(f32::NAN),
+        )
+        .expect_call(
+            "add-f64",
+            vec![Val::Float64(f64::MAX), Val::Float64(f64::MAX)],
+            Val::Float64(f64::INFINITY),
+        )
+        .expect_call(
+            "add-f64",
+            vec![Val::Float64(-0.0), Val::Float64(-0.0)],
+            Val::Float64(-0.0),
+        )
+        .expect_call(
+            "add-f64",
+            vec![Val::Float64(f64::MIN_POSITIVE), Val::Float64(0.0)],
+            Val::Float64(f64::MIN_POSITIVE),
+        )
+        .expect_call(
+            "add-f64",
+            vec![Val::Float64(4_294_967_296.0), Val::Float64(1.0)],
+            Val::Float64(4_294_967_297.0),
         )
         .run();
 }
