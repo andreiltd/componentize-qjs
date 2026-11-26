@@ -20,6 +20,7 @@ world all {
     export add-s64: func(a: s64, b: s64) -> s64;
     export add-f32: func(a: f32, b: f32) -> f32;
     export add-f64: func(a: f64, b: f64) -> f64;
+    export f64-to-u32: func(x: f64) -> u32;
     export negate: func(b: bool) -> bool;
     export add-points: func(a: point, b: point) -> point;
     export sum-list: func(nums: list<u32>) -> u32;

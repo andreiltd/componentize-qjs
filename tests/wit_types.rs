@@ -446,6 +446,21 @@ fn test_u32_lowers_above_i32_max() {
 }
 
 #[test]
+fn test_u32_lowers_like_unsigned_shift() {
+    // Any number lowers as `x >>> 0` would: NaN and the infinities as 0, the rest mod 2^32.
+    let arg = |x: f64| vec![Val::Float64(x)];
+
+    component()
+        .expect_call("f64-to-u32", arg(f64::NAN), Val::U32(0))
+        .expect_call("f64-to-u32", arg(f64::INFINITY), Val::U32(0))
+        .expect_call("f64-to-u32", arg(f64::NEG_INFINITY), Val::U32(0))
+        .expect_call("f64-to-u32", arg(-1.0), Val::U32(u32::MAX))
+        .expect_call("f64-to-u32", arg(2f64.powi(32) + 5.0), Val::U32(5))
+        .expect_call("f64-to-u32", arg(1e20), Val::U32(1_661_992_960))
+        .run();
+}
+
+#[test]
 fn test_float_types() {
     component()
         .expect_call(

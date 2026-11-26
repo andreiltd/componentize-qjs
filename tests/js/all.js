@@ -10,6 +10,7 @@ export function addU64(a, b) { return a + b; }
 export function addS64(a, b) { return a + b; }
 export function addF32(a, b) { return a + b; }
 export function addF64(a, b) { return a + b; }
+export function f64ToU32(x) { return x; }
 export function negate(b) { return !b; }
 export function addPoints(a, b) { return { x: a.x + b.x, y: a.y + b.y }; }
 export function sumList(nums) { return nums.reduce((a, b) => a + b, 0); }

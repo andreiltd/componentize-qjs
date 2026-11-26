@@ -192,8 +192,11 @@ impl Call for QjsCallContext {
     }
 
     fn pop_u32(&mut self) -> u32 {
-        // i32 would saturate a number from 2^31 up, which QuickJS keeps as a float64.
-        self.pop_with(|v| v.get::<i64>().expect("expected number") as u32)
+        // Coerced<i32> is ToInt32, so this matches `x >>> 0`; get::<i32> saturates from 2^31 up.
+        self.pop_with(|v| {
+            assert!(v.is_number(), "expected number");
+            v.get::<Coerced<i32>>().expect("expected number").0 as u32
+        })
     }
 
     fn pop_s32(&mut self) -> i32 {
