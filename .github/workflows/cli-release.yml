@@ -84,14 +84,14 @@ jobs:
           targets: wasm32-wasip2,${{ matrix.target }}
 
       - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@8a2045612414e945291083f820cd50b4d8fc2218 # v1.26.0
+        uses: cargo-bins/cargo-binstall@4d49f1d1ac88532b821c23d8f99c7ead3753d536 # v1.29.0
 
       - name: Install auditable build tool
         run: cargo binstall cargo-auditable --force
 
       - name: Install cross-compilation tools
         if: matrix.cross
-        uses: taiki-e/setup-cross-toolchain-action@12b7ad4acfa95a1476779d6c06699b96ec1691f8 # v1.42.0
+        uses: taiki-e/setup-cross-toolchain-action@0375eb1d01bea430aa3202965839a7092960a23b # v1.43.1
         with:
           target: ${{ matrix.target }}
 
