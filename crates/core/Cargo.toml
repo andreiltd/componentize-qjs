@@ -43,7 +43,7 @@ wit-dylib = "0.263"
 wasi-preview1-component-adapter-provider = "50"
 wasmtime.workspace = true
 wasmtime-wasi.workspace = true
-wasmtime-wizer = { version = "50", features = ["component-model", "wasmtime"] }
+wasmtime-wizer = { version = "51", features = ["component-model", "wasmtime"] }
 wasm-compose = { version = "0.263", default-features = false }
 wasm-encoder = { version = "0.263", features = ["wasmparser"] }
 wasmparser = "0.263"
