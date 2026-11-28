@@ -38,16 +38,16 @@ bytes = "1"
 oxc_resolver = "11.21.0"
 tokio.workspace = true
 wit-parser.workspace = true
-wit-component = { version = "0.262", features = ["dummy-module"] }
-wit-dylib = "0.262"
+wit-component = { version = "0.263", features = ["dummy-module"] }
+wit-dylib = "0.263"
 wasi-preview1-component-adapter-provider = "50"
 wasmtime.workspace = true
 wasmtime-wasi.workspace = true
 wasmtime-wizer = { version = "50", features = ["component-model", "wasmtime"] }
-wasm-compose = { version = "0.262", default-features = false }
-wasm-encoder = { version = "0.262", features = ["wasmparser"] }
-wasmparser = "0.262"
-walrus = "0.27.2"
+wasm-compose = { version = "0.263", default-features = false }
+wasm-encoder = { version = "0.263", features = ["wasmparser"] }
+wasmparser = "0.263"
+walrus = "0.29.0"
 indexmap = "2"
 tempfile = "3"
 
